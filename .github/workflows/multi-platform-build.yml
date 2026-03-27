@@ -1,25 +1,23 @@
-name: Subtitle Tool Build and Release
+name: Subtitle Tool Build
 
 on:
   push:
-    # 只有推送以 v 开头的标签（如 v1.0.1）时才触发 Release
-    tags:
-      - 'v*'
-  workflow_dispatch: # 保留手动触发按钮
-
-permissions:
-  contents: write # 必须赋予写入权限，否则 Actions 无法创建 Release
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   build:
     strategy:
       matrix:
+        # 同时在 Windows 和 macOS 虚拟机上运行
         os: [windows-latest, macos-latest]
         include:
           - os: windows-latest
             artifact_name: SubtitleTool-Windows
+            output_name: SubtitleToolbox.exe
           - os: macos-latest
             artifact_name: SubtitleTool-macOS
+            output_name: SubtitleToolbox.app
 
     runs-on: ${{ matrix.os }}
 
@@ -31,37 +29,41 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
+        cache: 'pip'
 
     - name: Install dependencies
-      run: pip install pyinstaller pandas openpyxl
+      run: |
+        python -m pip install --upgrade pip
+        pip install pyinstaller pandas openpyxl
 
-    # 打包逻辑（保持不变）
-    - name: Build (Windows)
+    # 根据不同平台执行不同的 PyInstaller 打包指令
+    - name: Build with PyInstaller (Windows)
       if: matrix.os == 'windows-latest'
-      run: pyinstaller --noconsole --onefile --name "SubtitleToolbox" subtitle_tool.pyw
+      run: |
+        # --noconsole 隐藏黑窗口，--onefile 打包为单文件
+        pyinstaller --noconsole --onefile --name "SubtitleToolbox" subtitle_tool.pyw
 
-    - name: Build (macOS)
+    - name: Build with PyInstaller (macOS)
       if: matrix.os == 'macos-latest'
-      run: pyinstaller --windowed --name "SubtitleToolbox" subtitle_tool.pyw
+      run: |
+        # --windowed 打包为 macOS 标准的 .app 格式
+        pyinstaller --windowed --name "SubtitleToolbox" subtitle_tool.pyw
 
-    # 压缩成品，方便发布
-    - name: Zip Artifacts
+    # 整理成品文件夹
+    - name: Prepare Artifacts
       shell: bash
       run: |
+        mkdir -p release_dist
         if [ "${{ matrix.os }}" == "windows-latest" ]; then
-          zip -j SubtitleTool-Win.zip dist/SubtitleToolbox.exe
+          cp dist/SubtitleToolbox.exe release_dist/
         else
-          zip -r SubtitleTool-Mac.zip dist/SubtitleToolbox.app
+          # macOS 打包出的 .app 其实是一个文件夹，需要整体拷贝
+          cp -r dist/SubtitleToolbox.app release_dist/
         fi
 
-    # 核心步骤：发布到 Release
-    - name: Create Release
-      uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
+    # 上传至 GitHub 界面供下载
+    - name: Upload result
+      uses: actions/upload-artifact@v4
       with:
-        # 指定要上传的文件
-        files: |
-          SubtitleTool-Win.zip
-          SubtitleTool-Mac.zip
-        # 自动根据 Commit 生成更新日志
-        generate_release_notes: true
+        name: ${{ matrix.artifact_name }}
+        path: release_dist/
