@@ -30,6 +30,7 @@ DEFAULT_PRESETS_REP = ["A, B, E", "B, C, I"]
 DEFAULT_PRESETS_SPLIT = ["A, B, C, D", "A, B, C, D, E"]
 DEFAULT_PRESETS_ASS = {
     "默认样式": {
+        "play_res_x": "1080", "play_res_y": "1920",
         "n_font": "SimHei", "n_size": "60", "n_color": "#FFFFFF", "n_out_color": "#000000",
         "n_margin_v": "20", "n_margin_lr": "20", "n_outline": "2", "n_align": "2", "n_shadow": "0", "n_bold": 0, "n_italic": 0,
         "s_font": "SimHei", "s_size": "60", "s_color": "#26E3FF", "s_out_color": "#000000",
@@ -59,6 +60,83 @@ def col2num(col_str):
         if 'A' <= c <= 'Z':
             num = num * 26 + (ord(c) - ord('A')) + 1
     return num - 1
+
+global_ass_preset_cbs = []
+
+def get_ass_resolution(filepath):
+    """解析 ASS 文件的 PlayResX 和 PlayResY"""
+    rx, ry = "1080", "1920"
+    if os.path.exists(filepath):
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
+            for line in f:
+                if line.startswith('PlayResX:'): rx = line.split(':')[1].strip()
+                elif line.startswith('PlayResY:'): ry = line.split(':')[1].strip()
+                elif line.startswith('[Events]'): break
+    return rx, ry
+
+def update_all_ass_preset_cbs():
+    keys = list(current_presets_ass.keys())
+    for cb in global_ass_preset_cbs:
+        cb['values'] = keys
+
+def create_ass_preset_bar(parent, n_vars, s_vars, c_btns, preset_cb_var, res_vars=None):
+    f_ps = ttk.Frame(parent)
+    ttk.Label(f_ps, text="样式预设:").pack(side=tk.LEFT, padx=(0,5))
+    cb = ttk.Combobox(f_ps, textvariable=preset_cb_var, values=list(current_presets_ass.keys()), width=15)
+    cb.pack(side=tk.LEFT, padx=5)
+    global_ass_preset_cbs.append(cb)
+    
+    def load_p(event=None):
+        name = preset_cb_var.get()
+        if name in current_presets_ass:
+            d = current_presets_ass[name]
+            if res_vars and len(res_vars) >= 2:
+                res_vars[0].set(d.get("play_res_x", "1080"))
+                res_vars[1].set(d.get("play_res_y", "1920"))
+            n_vars[0].set(d.get("n_font", "SimHei")); n_vars[1].set(d.get("n_size", "60"))
+            n_vars[2].set(d.get("n_color", "#FFFFFF")); n_vars[3].set(d.get("n_out_color", "#000000"))
+            n_vars[4].set(d.get("n_margin_v", "20")); n_vars[5].set(d.get("n_margin_lr", "20")); n_vars[6].set(d.get("n_outline", "2"))
+            n_vars[7].set(d.get("n_align", "2")); n_vars[8].set(d.get("n_shadow", "0"))
+            n_vars[9].set(d.get("n_bold", 0)); n_vars[10].set(d.get("n_italic", 0))
+            if len(n_vars) > 11:
+                n_vars[11].set(d.get("n_alpha", "00")); n_vars[12].set(d.get("n_out_alpha", "00"))
+            update_color_btn(c_btns[0], d.get("n_color", "#FFFFFF")); update_color_btn(c_btns[1], d.get("n_out_color", "#000000"))
+            
+            if s_vars and len(s_vars) >= 11 and len(c_btns) == 4:
+                s_vars[0].set(d.get("s_font", "SimHei")); s_vars[1].set(d.get("s_size", "60"))
+                s_vars[2].set(d.get("s_color", "#26E3FF")); s_vars[3].set(d.get("s_out_color", "#000000"))
+                s_vars[4].set(d.get("s_margin_v", "850")); s_vars[5].set(d.get("s_margin_lr", "20")); s_vars[6].set(d.get("s_outline", "2"))
+                s_vars[7].set(d.get("s_align", "8")); s_vars[8].set(d.get("s_shadow", "0"))
+                s_vars[9].set(d.get("s_bold", 0)); s_vars[10].set(d.get("s_italic", 0))
+                if len(s_vars) > 11:
+                    s_vars[11].set(d.get("s_alpha", "00")); s_vars[12].set(d.get("s_out_alpha", "00"))
+                update_color_btn(c_btns[2], d.get("s_color", "#26E3FF")); update_color_btn(c_btns[3], d.get("s_out_color", "#000000"))
+
+    def save_p():
+        name = preset_cb_var.get().strip()
+        if not name: return messagebox.showwarning("提示", "请输入预设名称！")
+        d = current_presets_ass.get(name, DEFAULT_PRESETS_ASS["默认样式"].copy())
+        if res_vars and len(res_vars) >= 2:
+            d.update({"play_res_x": res_vars[0].get(), "play_res_y": res_vars[1].get()})
+        d.update({"n_font": n_vars[0].get(), "n_size": n_vars[1].get(), "n_color": n_vars[2].get(), "n_out_color": n_vars[3].get(), "n_margin_v": n_vars[4].get(), "n_margin_lr": n_vars[5].get(), "n_outline": n_vars[6].get(), "n_align": n_vars[7].get(), "n_shadow": n_vars[8].get(), "n_bold": n_vars[9].get(), "n_italic": n_vars[10].get()})
+        if len(n_vars) > 11:
+            d.update({"n_alpha": n_vars[11].get(), "n_out_alpha": n_vars[12].get()})
+        if s_vars: 
+            d.update({"s_font": s_vars[0].get(), "s_size": s_vars[1].get(), "s_color": s_vars[2].get(), "s_out_color": s_vars[3].get(), "s_margin_v": s_vars[4].get(), "s_margin_lr": s_vars[5].get(), "s_outline": s_vars[6].get(), "s_align": s_vars[7].get(), "s_shadow": s_vars[8].get(), "s_bold": s_vars[9].get(), "s_italic": s_vars[10].get()})
+            if len(s_vars) > 11:
+                d.update({"s_alpha": s_vars[11].get(), "s_out_alpha": s_vars[12].get()})
+        current_presets_ass[name] = d; save_presets_to_file(PRESET_FILE_ASS, current_presets_ass); update_all_ass_preset_cbs(); preset_cb_var.set(name); messagebox.showinfo("提示", "样式预设保存成功！")
+        
+    def del_p():
+        name = preset_cb_var.get().strip()
+        if name in current_presets_ass:
+            del current_presets_ass[name]; save_presets_to_file(PRESET_FILE_ASS, current_presets_ass); update_all_ass_preset_cbs()
+            keys = list(current_presets_ass.keys()); preset_cb_var.set(keys[0] if keys else ""); load_p(); messagebox.showinfo("提示", "预设已删除！")
+        else: messagebox.showwarning("提示", "未找到该预设！")
+
+    cb.bind("<<ComboboxSelected>>", load_p); ttk.Button(f_ps, text="保存预设", command=save_p).pack(side=tk.LEFT, padx=5); ttk.Button(f_ps, text="删除选中", command=del_p).pack(side=tk.LEFT, padx=5)
+    if preset_cb_var.get(): load_p()
+    return f_ps
 
 # ================= 核心功能逻辑 =================
 
@@ -413,11 +491,13 @@ def process_srt_to_ass(input_dir, out_dir, bracket_str, regex_text, custom_style
             if s_text: screen_events.append(f"Dialogue: 0,{start_ass},{end_ass},画面字,,0,0,0,,{s_text}")
             if n_text: normal_events.append(f"Dialogue: 0,{start_ass},{end_ass},对白字幕,,0,0,0,,{n_text}")
 
-        if do_merge:
-            screen_events = merge_ass_dialogues(screen_events, file, merge_reports)
-            normal_events = merge_ass_dialogues(normal_events, file, merge_reports)
-
-        srt_script_info = "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n"
+        if style_mode == 0:
+            resx = custom_style_dict.get('play_res_x', '1080')
+            resy = custom_style_dict.get('play_res_y', '1920')
+        else:
+            resx, resy = get_ass_resolution(ref_cfg['ref_path'])
+            
+        srt_script_info = f"[Script Info]\nScriptType: v4.00+\nPlayResX: {resx}\nPlayResY: {resy}\n"
         srt_styles_block = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
         
         if style_mode == 0:
@@ -586,7 +666,13 @@ def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict
     all_files = sorted(list(norm_files.union(scr_files)))
     if not all_files: raise ValueError("输入的文件夹中没有找到任何 .srt 文件！")
     
-    srt_script_info = "[Script Info]\nScriptType: v4.00+\nPlayResX: 1920\nPlayResY: 1080\n"
+    if style_mode == 0:
+        resx = custom_style_dict.get('play_res_x', '1080')
+        resy = custom_style_dict.get('play_res_y', '1920')
+    else:
+        resx, resy = get_ass_resolution(ref_cfg['ref_path'])
+        
+    srt_script_info = f"[Script Info]\nScriptType: v4.00+\nPlayResX: {resx}\nPlayResY: {resy}\n"
     srt_styles_block = "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
     
     if style_mode == 0:
@@ -601,7 +687,7 @@ def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict
         if ref_cfg['font_mode'] == 1:
             n_line = replace_font_in_style(n_line, ref_cfg['override_font'])
             s_line = replace_font_in_style(s_line, ref_cfg['override_font'])
-        
+            
         srt_styles_block += n_line + "\n" + s_line
     
     for file in all_files:
@@ -794,6 +880,7 @@ def run_ass_convert():
     if do_merge and not merge_report_path: return messagebox.showwarning("警告", "勾选了合并功能，请指定合并报告的保存路径！")
     
     custom_style = {
+        "play_res_x": ass_resx_var.get(), "play_res_y": ass_resy_var.get(),
         "n_font": ass_n_font_var.get(), "n_size": ass_n_size_var.get(), "n_color": ass_n_color_var.get(), "n_alpha": ass_n_alpha_var.get(), "n_out_color": ass_n_outcolor_var.get(), "n_out_alpha": ass_n_outalpha_var.get(),
         "n_margin_v": ass_n_marginv_var.get(), "n_margin_lr": ass_n_marginlr_var.get(), "n_outline": ass_n_outline_var.get(),
         "n_align": ass_n_align_var.get(), "n_shadow": ass_n_shadow_var.get(), "n_bold": ass_n_bold_var.get(), "n_italic": ass_n_italic_var.get(),
@@ -846,6 +933,7 @@ def run_merge_srt_to_ass():
     if not out_d or (not norm_d and not scr_d): return messagebox.showwarning("警告", "请至少选择一个输入和输出文件夹！")
     
     custom_style = {
+        "play_res_x": m5_resx_var.get(), "play_res_y": m5_resy_var.get(),
         "n_font": m5_n_font_var.get(), "n_size": m5_n_size_var.get(), "n_color": m5_n_color_var.get(), "n_alpha": m5_n_alpha_var.get(), "n_out_color": m5_n_outcolor_var.get(), "n_out_alpha": m5_n_outalpha_var.get(),
         "n_margin_v": m5_n_marginv_var.get(), "n_margin_lr": m5_n_marginlr_var.get(), "n_outline": m5_n_outline_var.get(),
         "n_align": m5_n_align_var.get(), "n_shadow": m5_n_shadow_var.get(), "n_bold": m5_n_bold_var.get(), "n_italic": m5_n_italic_var.get(),
@@ -949,67 +1037,6 @@ def action_del_preset(var, current_list, combobox, filepath):
         messagebox.showinfo("提示", "预设已删除！")
     else: messagebox.showwarning("提示", "列表中没有此预设，无法删除。")
 
-global_ass_preset_cbs = []
-
-def update_all_ass_preset_cbs():
-    keys = list(current_presets_ass.keys())
-    for cb in global_ass_preset_cbs:
-        cb['values'] = keys
-
-def create_ass_preset_bar(parent, n_vars, s_vars, c_btns, preset_cb_var):
-    f_ps = ttk.Frame(parent)
-    ttk.Label(f_ps, text="样式预设:").pack(side=tk.LEFT, padx=(0,5))
-    cb = ttk.Combobox(f_ps, textvariable=preset_cb_var, values=list(current_presets_ass.keys()), width=15)
-    cb.pack(side=tk.LEFT, padx=5)
-    global_ass_preset_cbs.append(cb)
-    
-    def load_p(event=None):
-        name = preset_cb_var.get()
-        if name in current_presets_ass:
-            d = current_presets_ass[name]
-            n_vars[0].set(d.get("n_font", "SimHei")); n_vars[1].set(d.get("n_size", "60"))
-            n_vars[2].set(d.get("n_color", "#FFFFFF")); n_vars[3].set(d.get("n_out_color", "#000000"))
-            n_vars[4].set(d.get("n_margin_v", "20")); n_vars[5].set(d.get("n_margin_lr", "20")); n_vars[6].set(d.get("n_outline", "2"))
-            n_vars[7].set(d.get("n_align", "2")); n_vars[8].set(d.get("n_shadow", "0"))
-            n_vars[9].set(d.get("n_bold", 0)); n_vars[10].set(d.get("n_italic", 0))
-            if len(n_vars) > 11:
-                n_vars[11].set(d.get("n_alpha", "00")); n_vars[12].set(d.get("n_out_alpha", "00"))
-            update_color_btn(c_btns[0], d.get("n_color", "#FFFFFF")); update_color_btn(c_btns[1], d.get("n_out_color", "#000000"))
-            
-            if s_vars and len(s_vars) >= 11 and len(c_btns) == 4:
-                s_vars[0].set(d.get("s_font", "SimHei")); s_vars[1].set(d.get("s_size", "60"))
-                s_vars[2].set(d.get("s_color", "#26E3FF")); s_vars[3].set(d.get("s_out_color", "#000000"))
-                s_vars[4].set(d.get("s_margin_v", "850")); s_vars[5].set(d.get("s_margin_lr", "20")); s_vars[6].set(d.get("s_outline", "2"))
-                s_vars[7].set(d.get("s_align", "8")); s_vars[8].set(d.get("s_shadow", "0"))
-                s_vars[9].set(d.get("s_bold", 0)); s_vars[10].set(d.get("s_italic", 0))
-                if len(s_vars) > 11:
-                    s_vars[11].set(d.get("s_alpha", "00")); s_vars[12].set(d.get("s_out_alpha", "00"))
-                update_color_btn(c_btns[2], d.get("s_color", "#26E3FF")); update_color_btn(c_btns[3], d.get("s_out_color", "#000000"))
-
-    def save_p():
-        name = preset_cb_var.get().strip()
-        if not name: return messagebox.showwarning("提示", "请输入预设名称！")
-        d = current_presets_ass.get(name, DEFAULT_PRESETS_ASS["默认样式"].copy())
-        d.update({"n_font": n_vars[0].get(), "n_size": n_vars[1].get(), "n_color": n_vars[2].get(), "n_out_color": n_vars[3].get(), "n_margin_v": n_vars[4].get(), "n_margin_lr": n_vars[5].get(), "n_outline": n_vars[6].get(), "n_align": n_vars[7].get(), "n_shadow": n_vars[8].get(), "n_bold": n_vars[9].get(), "n_italic": n_vars[10].get()})
-        if len(n_vars) > 11:
-            d.update({"n_alpha": n_vars[11].get(), "n_out_alpha": n_vars[12].get()})
-        if s_vars: 
-            d.update({"s_font": s_vars[0].get(), "s_size": s_vars[1].get(), "s_color": s_vars[2].get(), "s_out_color": s_vars[3].get(), "s_margin_v": s_vars[4].get(), "s_margin_lr": s_vars[5].get(), "s_outline": s_vars[6].get(), "s_align": s_vars[7].get(), "s_shadow": s_vars[8].get(), "s_bold": s_vars[9].get(), "s_italic": s_vars[10].get()})
-            if len(s_vars) > 11:
-                d.update({"s_alpha": s_vars[11].get(), "s_out_alpha": s_vars[12].get()})
-        current_presets_ass[name] = d; save_presets_to_file(PRESET_FILE_ASS, current_presets_ass); update_all_ass_preset_cbs(); preset_cb_var.set(name); messagebox.showinfo("提示", "样式预设保存成功！")
-        
-    def del_p():
-        name = preset_cb_var.get().strip()
-        if name in current_presets_ass:
-            del current_presets_ass[name]; save_presets_to_file(PRESET_FILE_ASS, current_presets_ass); update_all_ass_preset_cbs()
-            keys = list(current_presets_ass.keys()); preset_cb_var.set(keys[0] if keys else ""); load_p(); messagebox.showinfo("提示", "预设已删除！")
-        else: messagebox.showwarning("提示", "未找到该预设！")
-
-    cb.bind("<<ComboboxSelected>>", load_p); ttk.Button(f_ps, text="保存预设", command=save_p).pack(side=tk.LEFT, padx=5); ttk.Button(f_ps, text="删除选中", command=del_p).pack(side=tk.LEFT, padx=5)
-    if preset_cb_var.get(): load_p()
-    return f_ps
-
 def choose_color(var, btn):
     c = colorchooser.askcolor(title="选择颜色", initialcolor=var.get() or "#FFFFFF")
     if c[1]:
@@ -1028,8 +1055,8 @@ def ask_save_file(var, title, filetypes, defaultextension): var.set(filedialog.a
 
 root = tk.Tk()
 root.title("字幕拆分与合并工具箱")
-root.geometry("780x660")
-root.minsize(600, 600)
+root.geometry("780x685")
+root.minsize(600, 685)
 
 # 跨平台主题与字体自适应
 os_name = platform.system()
@@ -1496,6 +1523,16 @@ ass_style_mode_5 = tk.IntVar(value=0)
 ass_frame_custom = ttk.Frame(f_ass_style)
 f_ass_ref_5 = ttk.Frame(f_ass_style)
 
+# --- 插入：分辨率 UI ---
+ass_resx_var, ass_resy_var = tk.StringVar(value="1080"), tk.StringVar(value="1920")
+f_ass_res_5 = ttk.Frame(ass_frame_custom)
+f_ass_res_5.pack(fill=tk.X, pady=(0, 5))
+ttk.Label(f_ass_res_5, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
+ttk.Entry(f_ass_res_5, textvariable=ass_resx_var, width=8).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_ass_res_5, text="(高/Y):").pack(side=tk.LEFT)
+ttk.Entry(f_ass_res_5, textvariable=ass_resy_var, width=8).pack(side=tk.LEFT, padx=5)
+# ---------------------
+
 def update_ass_style_mode_5():
     if ass_style_mode_5.get() == 0:
         ass_frame_custom.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -1535,7 +1572,7 @@ f_ps = create_ass_preset_bar(
     ass_frame_custom, 
     [ass_n_font_var, ass_n_size_var, ass_n_color_var, ass_n_outcolor_var, ass_n_marginv_var, ass_n_marginlr_var, ass_n_outline_var, ass_n_align_var, ass_n_shadow_var, ass_n_bold_var, ass_n_italic_var, ass_n_alpha_var, ass_n_outalpha_var],
     [ass_s_font_var, ass_s_size_var, ass_s_color_var, ass_s_outcolor_var, ass_s_marginv_var, ass_s_marginlr_var, ass_s_outline_var, ass_s_align_var, ass_s_shadow_var, ass_s_bold_var, ass_s_italic_var, ass_s_alpha_var, ass_s_outalpha_var],
-    [n_c_btn, n_oc_btn, s_c_btn, s_oc_btn], ass_preset_cb_var
+    [n_c_btn, n_oc_btn, s_c_btn, s_oc_btn], ass_preset_cb_var, [ass_resx_var, ass_resy_var]
 )
 
 f_ps.pack(fill=tk.X, pady=(5, 5))
@@ -1626,6 +1663,16 @@ ms_style_mode_9 = tk.IntVar(value=0)
 f_ms_frame_custom = ttk.Frame(f_ms_style)
 f_ms_ref_9 = ttk.Frame(f_ms_style)
 
+# --- 插入：分辨率 UI ---
+m5_resx_var, m5_resy_var = tk.StringVar(value="1080"), tk.StringVar(value="1920")
+f_ms_res = ttk.Frame(f_ms_frame_custom)
+f_ms_res.pack(fill=tk.X, pady=(0, 5))
+ttk.Label(f_ms_res, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
+ttk.Entry(f_ms_res, textvariable=m5_resx_var, width=8).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_ms_res, text="(高/Y):").pack(side=tk.LEFT)
+ttk.Entry(f_ms_res, textvariable=m5_resy_var, width=8).pack(side=tk.LEFT, padx=5)
+# ---------------------
+
 def update_ms_style_mode_9():
     if ms_style_mode_9.get() == 0:
         f_ms_frame_custom.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -1661,7 +1708,7 @@ f_ms_ps = create_ass_preset_bar(
     f_ms_frame_custom,
     [m5_n_font_var, m5_n_size_var, m5_n_color_var, m5_n_outcolor_var, m5_n_marginv_var, m5_n_marginlr_var, m5_n_outline_var, m5_n_align_var, m5_n_shadow_var, m5_n_bold_var, m5_n_italic_var, m5_n_alpha_var, m5_n_outalpha_var],
     [m5_s_font_var, m5_s_size_var, m5_s_color_var, m5_s_outcolor_var, m5_s_marginv_var, m5_s_marginlr_var, m5_s_outline_var, m5_s_align_var, m5_s_shadow_var, m5_s_bold_var, m5_s_italic_var, m5_s_alpha_var, m5_s_outalpha_var],
-    [c_btn_msn, oc_btn_msn, c_btn_mss, oc_btn_mss], ms_preset_var
+    [c_btn_msn, oc_btn_msn, c_btn_mss, oc_btn_mss], ms_preset_var, [m5_resx_var, m5_resy_var]
 )
 
 f_ms_ps.pack(fill=tk.X, pady=5)
@@ -1855,13 +1902,22 @@ e_m2s_align, e_m2s_shad, e_m2s_bold, e_m2s_ita = tk.StringVar(value="8"), tk.Str
 e_m2s_alpha, e_m2s_outalpha = tk.StringVar(value="00"), tk.StringVar(value="00")
 cb_m2s, c_btn_m2s, oc_btn_m2s = build_style_tab(t2_s, e_m2s_font, e_m2s_size, e_m2s_col, e_m2s_ocol, e_m2s_mv, e_m2s_mlr, e_m2s_outl, e_m2s_align, e_m2s_shad, e_m2s_bold, e_m2s_ita, e_m2s_alpha, e_m2s_outalpha)
 
+# --- 新增：分辨率 UI ---
+e_m2_resx, e_m2_resy = tk.StringVar(value="1080"), tk.StringVar(value="1920")
+f_m2_res = ttk.Frame(f_m2_container)
+f_m2_res.pack(fill=tk.X, pady=(5, 0))
+ttk.Label(f_m2_res, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
+ttk.Entry(f_m2_res, textvariable=e_m2_resx, width=8).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_m2_res, text="(高/Y):").pack(side=tk.LEFT)
+ttk.Entry(f_m2_res, textvariable=e_m2_resy, width=8).pack(side=tk.LEFT, padx=5)
+
 m2_preset_var = tk.StringVar()
 if current_presets_ass: m2_preset_var.set(list(current_presets_ass.keys())[0])
 f_m2_ps = create_ass_preset_bar(
     f_m2_container,
     [e_m2n_font, e_m2n_size, e_m2n_col, e_m2n_ocol, e_m2n_mv, e_m2n_mlr, e_m2n_outl, e_m2n_align, e_m2n_shad, e_m2n_bold, e_m2n_ita, e_m2n_alpha, e_m2n_outalpha],
     [e_m2s_font, e_m2s_size, e_m2s_col, e_m2s_ocol, e_m2s_mv, e_m2s_mlr, e_m2s_outl, e_m2s_align, e_m2s_shad, e_m2s_bold, e_m2s_ita, e_m2s_alpha, e_m2s_outalpha],
-    [c_btn_m2n, oc_btn_m2n, c_btn_m2s, oc_btn_m2s], m2_preset_var
+    [c_btn_m2n, oc_btn_m2n, c_btn_m2s, oc_btn_m2s], m2_preset_var, [e_m2_resx, e_m2_resy]
 )
 f_m2_ps.pack(fill=tk.X, pady=5)
 
@@ -1975,10 +2031,21 @@ cb_m4, c_btn_m4, oc_btn_m4 = build_style_tab(f_m4_custom, e_m4_font, e_m4_size, 
 
 m4_preset_var = tk.StringVar()
 if current_presets_ass: m4_preset_var.set(list(current_presets_ass.keys())[0])
+# --- 新增：分辨率 UI ---
+e_m4_resx, e_m4_resy = tk.StringVar(value="1080"), tk.StringVar(value="1920")
+f_m4_res = ttk.Frame(f_m4_custom)
+f_m4_res.grid(row=3, column=0, columnspan=8, sticky="w", pady=(10, 0))
+ttk.Label(f_m4_res, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
+ttk.Entry(f_m4_res, textvariable=e_m4_resx, width=8).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_m4_res, text="(高/Y):").pack(side=tk.LEFT)
+ttk.Entry(f_m4_res, textvariable=e_m4_resy, width=8).pack(side=tk.LEFT, padx=5)
+
+m4_preset_var = tk.StringVar()
+if current_presets_ass: m4_preset_var.set(list(current_presets_ass.keys())[0])
 f_m4_ps = create_ass_preset_bar(
     f_m4_custom,
     [e_m4_font, e_m4_size, e_m4_col, e_m4_ocol, e_m4_mv, e_m4_mlr, e_m4_outl, e_m4_align, e_m4_shad, e_m4_bold, e_m4_ita, e_m4_alpha, e_m4_outalpha], None, [c_btn_m4, oc_btn_m4],
-    m4_preset_var
+    m4_preset_var, [e_m4_resx, e_m4_resy]
 )
 f_m4_ps.grid(row=3, column=0, columnspan=8, sticky="w", pady=5)
 
@@ -2028,9 +2095,21 @@ def execute_ass_editor():
 
     global_ref_resx, global_ref_resy = None, None
     rp = None
-    if mode == 0 and edit_m1_mode.get() == 1: rp = m1_ref_path.get().strip()
-    elif mode == 1 and edit_m2_mode.get() == 1: rp = m2_ref_path.get().strip()
-    elif mode == 3 and edit_m4_mode.get() == 1: rp = m4_ref_path.get().strip()
+    if mode == 0:
+        if edit_m1_mode.get() == 1: rp = m1_ref_path.get().strip()
+        else:
+            if e_m1_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m1_resx.get().strip()}"
+            if e_m1_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m1_resy.get().strip()}"
+    elif mode == 1:
+        if edit_m2_mode.get() == 1: rp = m2_ref_path.get().strip()
+        else:
+            if e_m2_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m2_resx.get().strip()}"
+            if e_m2_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m2_resy.get().strip()}"
+    elif mode == 3:
+        if edit_m4_mode.get() == 1: rp = m4_ref_path.get().strip()
+        else:
+            if e_m4_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m4_resx.get().strip()}"
+            if e_m4_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m4_resy.get().strip()}"
     
     if rp and os.path.exists(rp):
         with open(rp, 'r', encoding='utf-8-sig') as f:
@@ -2365,6 +2444,7 @@ ext_file_var = tk.StringVar()
 ext_style_var = tk.StringVar()
 ext_preset_name = tk.StringVar()
 ext_styles_cache = {}
+ext_res_cache = {"x": "1080", "y": "1920"}
 
 ttk.Label(tab_ext, text="选择用于提取的 ASS 文件:").grid(row=0, column=0, sticky="e", pady=10)
 ttk.Entry(tab_ext, textvariable=ext_file_var, width=40).grid(row=0, column=1, sticky="w", padx=5)
@@ -2374,12 +2454,16 @@ def run_scan_ext():
     f = ext_file_var.get().strip()
     if not os.path.exists(f): return messagebox.showwarning("错误", "文件不存在")
     s = scan_ass_for_styles(f)
+    rx, ry = get_ass_resolution(f)
+    ext_res_cache["x"] = rx
+    ext_res_cache["y"] = ry
+    
     ext_styles_cache.clear()
     ext_styles_cache.update(s)
     k = list(s.keys())
     cb_ext_style['values'] = k
     if k: ext_style_var.set(k[0])
-    messagebox.showinfo("成功", f"扫描到 {len(k)} 个样式")
+    messagebox.showinfo("成功", f"扫描到 {len(k)} 个样式\n自动获取到视频分辨率: {rx} x {ry}")
 
 ttk.Button(tab_ext, text="🔍 扫描样式", command=run_scan_ext).grid(row=0, column=3, padx=5)
 
@@ -2429,11 +2513,13 @@ def save_ext_preset():
     
     # 将提取到的样式同时应用给预设底层的双字段，确保在其他页面的面板加载时完美映射
     d.update({
+        "play_res_x": ext_res_cache["x"], "play_res_y": ext_res_cache["y"],
         "n_font": pd_dict["font"], "n_size": pd_dict["size"], "n_color": pd_dict["color"], "n_alpha": pd_dict["alpha"], "n_out_color": pd_dict["out_color"], "n_out_alpha": pd_dict["out_alpha"], "n_margin_v": pd_dict["margin_v"], "n_margin_lr": pd_dict["margin_lr"], "n_outline": pd_dict["outline"], "n_align": pd_dict["align"], "n_shadow": pd_dict["shadow"], "n_bold": pd_dict["bold"], "n_italic": pd_dict["italic"],
         "s_font": pd_dict["font"], "s_size": pd_dict["size"], "s_color": pd_dict["color"], "s_alpha": pd_dict["alpha"], "s_out_color": pd_dict["out_color"], "s_out_alpha": pd_dict["out_alpha"], "s_margin_v": pd_dict["margin_v"], "s_margin_lr": pd_dict["margin_lr"], "s_outline": pd_dict["outline"], "s_align": pd_dict["align"], "s_shadow": pd_dict["shadow"], "s_bold": pd_dict["bold"], "s_italic": pd_dict["italic"]
     })
-              
+
     current_presets_ass[name] = d
+
     save_presets_to_file(PRESET_FILE_ASS, current_presets_ass)
     update_all_ass_preset_cbs()
     messagebox.showinfo("成功", f"预设 [{name}] 已提取并保存！\n\n该预设已同步至所有编辑界面，且包含了完整的透明度、阴影等 13 项样式参数。")
