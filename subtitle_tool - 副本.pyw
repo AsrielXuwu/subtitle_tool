@@ -546,92 +546,61 @@ def scan_all_styles_from_ass(filepath):
 def process_ass_editor(input_dir, out_dir, mode_cfg):
     pass # Reserved, actual logic integrated into execute_ass_editor
 
-def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str):
-    col_idx = int(col_str.split(':')[0])
-    ext = '.srt' if fmt == 'SRT' else '.ass'
-    tgt_files = [f for f in os.listdir(tgt_dir) if f.lower().endswith(ext)]
-    if not tgt_files: raise ValueError(f"待接收数据的目标文件夹中没有 {ext} 文件！")
+def process_ass_effect_copy_batch(src_dir, tgt_dir, out_dir, error_report_path):
+    tgt_files = [f for f in os.listdir(tgt_dir) if f.lower().endswith('.ass')]
+    if not tgt_files: raise ValueError("待接收特效的文件夹中没有 ASS 文件！")
     
     all_errors = []
     processed_count = 0
     os.makedirs(out_dir, exist_ok=True)
     
     for file in tgt_files:
-        src_file = os.path.join(src_dir, file)
-        tgt_file = os.path.join(tgt_dir, file)
-        out_file = os.path.join(out_dir, file)
-    
-        if not os.path.exists(src_file):
-            all_errors.append({'文件名': file, '目标行号/时间轴': 'N/A', '目标文本': 'N/A', '错误说明': '提供数据的源文件夹中找不到同名文件'})
-            with open(tgt_file, 'r', encoding='utf-8-sig') as f, open(out_file, 'w', encoding='utf-8') as out_f:
-                out_f.write(f.read())
+        src_ass = os.path.join(src_dir, file)
+        tgt_ass = os.path.join(tgt_dir, file)
+        out_ass = os.path.join(out_dir, file)
+        
+        if not os.path.exists(src_ass):
+            all_errors.append({'文件名': file, '目标ASS时间轴': 'N/A', '目标ASS文本': 'N/A', '错误说明': '提供特效的文件夹中找不到同名文件'})
+            with open(tgt_ass, 'r', encoding='utf-8-sig') as f:
+                with open(out_ass, 'w', encoding='utf-8') as out_f:
+                    out_f.write(f.read())
             continue
 
-        if fmt == "SRT":
-            src_blocks = parse_srt_file(src_file)
-            tgt_blocks = parse_srt_file(tgt_file)
+        with open(src_ass, 'r', encoding='utf-8-sig') as f:
+            src_content = f.read().split('\n')
+        
+        src_effects = {}
+        for line in src_content:
+            if line.strip().startswith('Dialogue:'):
+                parts = line.split(',', 9)
+                if len(parts) >= 10:
+                    start, end = parts[1].strip(), parts[2].strip()
+                    src_effects[(start, end)] = parts[8].strip()
 
-            if len(src_blocks) != len(tgt_blocks):
-                all_errors.append({'文件名': file, '目标行号/时间轴': 'N/A', '目标文本': 'N/A', '错误说明': f'警告：行数不一致! 源:{len(src_blocks)}行, 目标:{len(tgt_blocks)}行'})
+        with open(tgt_ass, 'r', encoding='utf-8-sig') as f:
+            tgt_content = f.read().split('\n')
+        
+        out_lines = []
+        for line in tgt_content:
+            if line.strip().startswith('Dialogue:'):
+                parts = line.split(',', 9)
+                if len(parts) >= 10:
+                    start, end = parts[1].strip(), parts[2].strip()
+                    if (start, end) in src_effects:
+                        parts[8] = src_effects[(start, end)]
+                        out_lines.append(",".join(parts))
+                    else:
+                        all_errors.append({'文件名': file, '目标ASS时间轴': f"{start} --> {end}", '目标ASS文本': parts[9], '错误说明': '源文件中未找到该时间轴'})
+                        out_lines.append(line)
+                else: out_lines.append(line)
+            else: out_lines.append(line)
 
-            out_blocks = []
-            for i, t_b in enumerate(tgt_blocks):
-                p = [t_b['ID'], t_b['Timeline'], t_b['Text']]
-                if i < len(src_blocks):
-                    s_b = src_blocks[i]
-                    s_p = [s_b['ID'], s_b['Timeline'], s_b['Text']]
-
-                    if t_b['Timeline'] != s_b['Timeline']:
-                        all_errors.append({'文件名': file, '目标行号/时间轴': f"第{i+1}行 {t_b['Timeline']}", '目标文本': t_b['Text'], '错误说明': f"时间轴不一致! 源时间轴为 {s_b['Timeline']}"})
-                    
-                    p[col_idx] = s_p[col_idx] # 粗暴覆盖指定列
-                else:
-                    all_errors.append({'文件名': file, '目标行号/时间轴': f"第{i+1}行 {t_b['Timeline']}", '目标文本': t_b['Text'], '错误说明': '源文件在此行缺失，无法复制'})
-
-                out_blocks.append(f"{p[0]}\n{p[1]}\n{p[2]}\n")
-
-            with open(out_file, 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks))
-            processed_count += 1
-
-        else: # ASS 格式
-            with open(src_file, 'r', encoding='utf-8-sig') as f: src_lines = f.read().split('\n')
-            with open(tgt_file, 'r', encoding='utf-8-sig') as f: tgt_lines = f.read().split('\n')
-
-            src_diags = [l for l in src_lines if l.strip().startswith('Dialogue:')]
-            out_lines = []
-            diag_idx = 0
-            
-            tgt_diags_count = len([l for l in tgt_lines if l.strip().startswith('Dialogue:')])
-            if len(src_diags) != tgt_diags_count:
-                all_errors.append({'文件名': file, '目标行号/时间轴': 'N/A', '目标文本': 'N/A', '错误说明': f"Dialogue行数不一致! 源:{len(src_diags)}行, 目标:{tgt_diags_count}行"})
-
-            for line in tgt_lines:
-                if line.strip().startswith('Dialogue:'):
-                    t_p = line.split(',', 9)
-                    if len(t_p) >= 10:
-                        if diag_idx < len(src_diags):
-                            s_line = src_diags[diag_idx]
-                            s_p = s_line.split(',', 9)
-                            if len(s_p) >= 10:
-                                t_time = f"{t_p[1]} --> {t_p[2]}"
-                                s_time = f"{s_p[1]} --> {s_p[2]}"
-                                if t_time != s_time:
-                                    all_errors.append({'文件名': file, '目标行号/时间轴': f"第{diag_idx+1}条 {t_time}", '目标文本': t_p[9], '错误说明': f"时间轴不一致! 源时间轴为 {s_time}"})
-                                
-                                if col_idx < len(t_p) and col_idx < len(s_p):
-                                    t_p[col_idx] = s_p[col_idx] # 粗暴覆盖指定列
-                                    line = ",".join(t_p)
-                        else:
-                            all_errors.append({'文件名': file, '目标行号/时间轴': f"第{diag_idx+1}条", '目标文本': t_p[9] if len(t_p)>9 else 'N/A', '错误说明': '源文件在此行缺失，无法复制'})
-                    out_lines.append(line)
-                    diag_idx += 1
-                else:
-                    out_lines.append(line)
-
-            with open(out_file, 'w', encoding='utf-8') as f: f.write("\n".join(out_lines))
-            processed_count += 1
-
-    if all_errors and err_rep: pd.DataFrame(all_errors).to_excel(err_rep, index=False)
+        with open(out_ass, 'w', encoding='utf-8') as f:
+            f.write("\n".join(out_lines))
+        processed_count += 1
+        
+    if all_errors and error_report_path:
+        pd.DataFrame(all_errors).to_excel(error_report_path, index=False)
     return processed_count, len(all_errors)
 
 def process_srt_bilingual_split_batch(in_dir, out_dir, suffix1, suffix2):
@@ -939,16 +908,14 @@ def run_ass_convert():
         messagebox.showinfo("完成", f"转换完成！\n成功处理了 {count} 个 SRT 文件，已全部转为 ASS 并应用样式。")
     except Exception as e: messagebox.showerror("错误", f"转换失败:\n{str(e)}")
 
-def run_column_copy():
+def run_ass_effect_copy():
     src_dir, tgt_dir = eff_src_var.get().strip(), eff_tgt_var.get().strip()
     out_dir, err_rep = eff_out_var.get().strip(), eff_err_var.get().strip()
-    fmt, col_str = eff_fmt_var.get(), eff_col_var.get()
-    
     if not src_dir or not tgt_dir or not out_dir: return messagebox.showwarning("警告", "请完整选择目录！")
     try:
-        processed_count, err_count = process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str)
-        if err_count > 0: messagebox.showwarning("部分完成", f"成功提取 {processed_count} 个文件！但检测到 {err_count} 处异常(行数缺失或时间轴错位)，已忽略时间轴强行复用并导出报告。")
-        else: messagebox.showinfo("完成", f"完美处理 {processed_count} 个文件！所选列已严格按行数映射全部复制成功。")
+        processed_count, err_count = process_ass_effect_copy_batch(src_dir, tgt_dir, out_dir, err_rep)
+        if err_count > 0: messagebox.showwarning("部分完成", f"成功处理 {processed_count} 个文件！但有 {err_count} 处匹配失败，已导出报告。")
+        else: messagebox.showinfo("完成", f"完美处理 {processed_count} 个文件！特效列全部复制成功。")
     except Exception as e: messagebox.showerror("错误", f"处理失败:\n{str(e)}")
 
 def run_srt_bilingual_split():
@@ -1088,7 +1055,7 @@ def ask_save_file(var, title, filetypes, defaultextension): var.set(filedialog.a
 
 root = tk.Tk()
 root.title("字幕拆分与合并工具箱")
-root.geometry("740x680")
+root.geometry("820x680")
 root.minsize(500, 500)
 
 # 跨平台主题与字体自适应
@@ -1820,127 +1787,106 @@ nb_ass.add(tab_edit, text=" SRT/ASS编辑器 ")
 tab_edit.columnconfigure(1, weight=1)
 
 edit_in_var, edit_out_var = tk.StringVar(), tk.StringVar()
-ttk.Label(tab_edit, text="字幕输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
+ttk.Label(tab_edit, text="仅限 ASS 输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
 ttk.Entry(tab_edit, textvariable=edit_in_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 ttk.Button(tab_edit, text="浏览...", command=lambda: ask_dir(edit_in_var, "选择目录")).grid(row=0, column=2, padx=(5,0), pady=5)
 
-ttk.Label(tab_edit, text="修改后字幕输出:").grid(row=1, column=0, sticky="e", padx=(0,5), pady=5)
+ttk.Label(tab_edit, text="修改后 ASS 输出:").grid(row=1, column=0, sticky="e", padx=(0,5), pady=5)
 ttk.Entry(tab_edit, textvariable=edit_out_var).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 ttk.Button(tab_edit, text="浏览...", command=lambda: ask_dir(edit_out_var, "选择目录")).grid(row=1, column=2, padx=(5,0), pady=5)
 
 edit_nb = ttk.Notebook(tab_edit)
 edit_nb.grid(row=2, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
 
-ASS_COLS = ["0: Layer", "1: Start", "2: End", "3: Style", "4: Name", "5: MarginL", "6: MarginR", "7: MarginV", "8: Effect", "9: Text"]
-SRT_COLS = ["0: ID", "1: Timeline", "2: Text"]
+# ------ 功能1: 定向修改已有样式 ------
+etab_mod = ttk.Frame(edit_nb, padding=10); edit_nb.add(etab_mod, text="修改/替换样式")
+edit_m1_target_var = tk.StringVar()
 
-# ------ 功能0: 依指定列多选改样式 (替代原功能1和功能4) ------
-etab_m0 = ttk.Frame(edit_nb, padding=10)
-edit_nb.add(etab_m0, text="按指定列改样式")
-etab_m0.columnconfigure(1, weight=1)
-
-f_m0_top = ttk.Frame(etab_m0)
-f_m0_top.grid(row=0, column=0, columnspan=3, sticky="ew", pady=5)
-ttk.Label(f_m0_top, text="选择要扫描检索的列:").pack(side=tk.LEFT)
-m0_col_var = tk.StringVar(value=ASS_COLS[3]) # 默认选择 Style 列
-ttk.Combobox(f_m0_top, textvariable=m0_col_var, values=ASS_COLS, state="readonly", width=12).pack(side=tk.LEFT, padx=5)
-
-def scan_m0_cols():
+def scan_input_styles():
     d = edit_in_var.get().strip()
-    if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在上方选择 ASS 输入文件夹！")
-    ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
-    if not ass_files: return messagebox.showwarning("提示", "输入文件夹中未找到 .ass 文件！")
+    if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先选择输入文件夹！")
     
-    col_idx = int(m0_col_var.get().split(':')[0])
-    vals = set()
+    ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
+    if not ass_files: return messagebox.showwarning("提示", "输入文件夹中没有找到 .ass 文件！")
+    
+    all_styles = set()
     for filepath in ass_files:
         with open(filepath, 'r', encoding='utf-8-sig') as f:
+            in_s = False
             for line in f:
-                if line.startswith('Dialogue:'):
-                    p = line.strip().split(',', 9)
-                    if len(p) > col_idx and p[col_idx].strip():
-                        vals.add(p[col_idx].strip())
-                        
-    lb_m0_vals.delete(0, tk.END)
-    names = sorted(list(vals))
-    for n in names: lb_m0_vals.insert(tk.END, n)
-    if names: messagebox.showinfo("成功", f"扫描完毕，在该列中发现了 {len(names)} 个唯一数据！")
-    else: messagebox.showwarning("提示", "未扫描到任何内容，该列可能全为空。")
+                l = line.strip()
+                if l.startswith('[V4+ Styles]'): in_s = True; continue
+                if l.startswith('[Events]'): break
+                if in_s and l.startswith('Style:'):
+                    name = l.split('Style:')[1].split(',')[0].strip()
+                    all_styles.add(name)
+    
+    names = list(all_styles)
+    if not names: return messagebox.showwarning("提示", "没有扫描到任何样式名！")
+    edit_m1_target_cb['values'] = names
+    edit_m1_target_var.set(names[0])
+    messagebox.showinfo("成功", f"扫描完毕，在所有文件中发现了 {len(names)} 个唯一原样式！")
 
-ttk.Button(f_m0_top, text="🔍 一键扫描提取数据", command=scan_m0_cols).pack(side=tk.LEFT, padx=10)
+ttk.Label(etab_mod, text="选择输入 ASS 中要修改的样式名:").grid(row=0, column=0, sticky="e", pady=5)
+edit_m1_target_cb = ttk.Combobox(etab_mod, textvariable=edit_m1_target_var, width=15)
+edit_m1_target_cb.grid(row=0, column=1, sticky="w", padx=5)
+ttk.Button(etab_mod, text="一键扫描并列出样式", command=scan_input_styles).grid(row=0, column=2, sticky="w", padx=5)
 
-f_m0_lb = ttk.Frame(etab_m0)
-f_m0_lb.grid(row=1, column=0, columnspan=3, sticky="ew", pady=5)
-ttk.Label(f_m0_lb, text="在下方选中要修改的数据项 (支持鼠标拖拽 / 按住Ctrl或Shift多选):").pack(anchor="w")
-lb_m0_vals = tk.Listbox(f_m0_lb, selectmode=tk.EXTENDED, height=5, exportselection=False)
-lb_m0_vals.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-sb_m0 = ttk.Scrollbar(f_m0_lb, command=lb_m0_vals.yview)
-sb_m0.pack(side=tk.LEFT, fill=tk.Y)
-lb_m0_vals.config(yscrollcommand=sb_m0.set)
-
-f_m0_mid = ttk.Frame(etab_m0)
-f_m0_mid.grid(row=2, column=0, columnspan=3, sticky="ew", pady=5)
-ttk.Label(f_m0_mid, text="将选中的字幕行统一替换为新样式，命名为:").pack(side=tk.LEFT)
-m0_target_style_var = tk.StringVar(value="Mod_Style")
-ttk.Entry(f_m0_mid, textvariable=m0_target_style_var, width=15).pack(side=tk.LEFT, padx=5)
-
-edit_m0_mode = tk.IntVar(value=0)
-def update_m0_ui():
-    if edit_m0_mode.get() == 0:
-        f_m0_custom.grid(row=4, column=0, columnspan=3, sticky="ew")
-        f_m0_ref.grid_remove()
+edit_m1_mode = tk.IntVar(value=0)
+def update_m1_ui():
+    if edit_m1_mode.get() == 0:
+        f_m1_custom.grid(row=2, column=0, columnspan=3, sticky="w"); f_m1_ref.grid_remove()
     else:
-        f_m0_custom.grid_remove()
-        f_m0_ref.grid(row=4, column=0, columnspan=3, sticky="w")
+        f_m1_custom.grid_remove(); f_m1_ref.grid(row=2, column=0, columnspan=3, sticky="w")
 
-ttk.Radiobutton(f_m0_mid, text="赋予下方自定义样式", variable=edit_m0_mode, value=0, command=update_m0_ui).pack(side=tk.LEFT, padx=(20, 5))
-ttk.Radiobutton(f_m0_mid, text="从外部 ASS 偷取样式", variable=edit_m0_mode, value=1, command=update_m0_ui).pack(side=tk.LEFT)
+ttk.Radiobutton(etab_mod, text="使用下方自定义参数进行修改", variable=edit_m1_mode, value=0, command=update_m1_ui).grid(row=1, column=0, columnspan=2, sticky="w", pady=10)
+ttk.Radiobutton(etab_mod, text="从外部指定 ASS 偷取样式直接替换", variable=edit_m1_mode, value=1, command=update_m1_ui).grid(row=1, column=1, columnspan=2, sticky="w", pady=10)
 
-# 自定义样式面板
-f_m0_custom = ttk.Frame(etab_m0)
-e_m0_font, e_m0_size, e_m0_col, e_m0_ocol = tk.StringVar(value="SimHei"), tk.StringVar(value="60"), tk.StringVar(value="#FFFFFF"), tk.StringVar(value="#000000")
-e_m0_mv, e_m0_mlr, e_m0_outl = tk.StringVar(value="20"), tk.StringVar(value="20"), tk.StringVar(value="2")
-e_m0_align, e_m0_shad, e_m0_bold, e_m0_ita = tk.StringVar(value="2"), tk.StringVar(value="0"), tk.IntVar(value=0), tk.IntVar(value=0)
-e_m0_alpha, e_m0_outalpha = tk.StringVar(value="00"), tk.StringVar(value="00")
-cb_m0, c_btn_m0, oc_btn_m0 = build_style_tab(f_m0_custom, e_m0_font, e_m0_size, e_m0_col, e_m0_ocol, e_m0_mv, e_m0_mlr, e_m0_outl, e_m0_align, e_m0_shad, e_m0_bold, e_m0_ita, e_m0_alpha, e_m0_outalpha)
+f_m1_custom = ttk.Frame(etab_mod)
+e_m1_font, e_m1_size, e_m1_col, e_m1_ocol = tk.StringVar(value="SimHei"), tk.StringVar(value="60"), tk.StringVar(value="#FFFFFF"), tk.StringVar(value="#000000")
+e_m1_mv, e_m1_mlr, e_m1_outl = tk.StringVar(value="20"), tk.StringVar(value="20"), tk.StringVar(value="2")
+e_m1_align, e_m1_shad, e_m1_bold, e_m1_ita = tk.StringVar(value="2"), tk.StringVar(value="0"), tk.IntVar(value=0), tk.IntVar(value=0)
+e_m1_alpha, e_m1_outalpha = tk.StringVar(value="00"), tk.StringVar(value="00")
+cb_m1, c_btn_m1, oc_btn_m1 = build_style_tab(f_m1_custom, e_m1_font, e_m1_size, e_m1_col, e_m1_ocol, e_m1_mv, e_m1_mlr, e_m1_outl, e_m1_align, e_m1_shad, e_m1_bold, e_m1_ita, e_m1_alpha, e_m1_outalpha)
 
-e_m0_resx, e_m0_resy = tk.StringVar(value="1080"), tk.StringVar(value="1920")
-f_m0_res = ttk.Frame(f_m0_custom)
-f_m0_res.grid(row=3, column=0, columnspan=8, sticky="w", pady=(10, 0))
-ttk.Label(f_m0_res, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
-ttk.Entry(f_m0_res, textvariable=e_m0_resx, width=8).pack(side=tk.LEFT, padx=5)
-ttk.Label(f_m0_res, text="(高/Y):").pack(side=tk.LEFT)
-ttk.Entry(f_m0_res, textvariable=e_m0_resy, width=8).pack(side=tk.LEFT, padx=5)
+m1_preset_var = tk.StringVar()
+if current_presets_ass: m1_preset_var.set(list(current_presets_ass.keys())[0])
+f_m1_ps = create_ass_preset_bar(
+    f_m1_custom,
+    [e_m1_font, e_m1_size, e_m1_col, e_m1_ocol, e_m1_mv, e_m1_mlr, e_m1_outl, e_m1_align, e_m1_shad, e_m1_bold, e_m1_ita, e_m1_alpha, e_m1_outalpha], None, [c_btn_m1, oc_btn_m1],
+    m1_preset_var
+)
 
-m0_preset_var = tk.StringVar()
-if current_presets_ass: m0_preset_var.set(list(current_presets_ass.keys())[0])
-f_m0_ps = create_ass_preset_bar(f_m0_custom, [e_m0_font, e_m0_size, e_m0_col, e_m0_ocol, e_m0_mv, e_m0_mlr, e_m0_outl, e_m0_align, e_m0_shad, e_m0_bold, e_m0_ita, e_m0_alpha, e_m0_outalpha], None, [c_btn_m0, oc_btn_m0], m0_preset_var, [e_m0_resx, e_m0_resy])
-f_m0_ps.grid(row=4, column=0, columnspan=8, sticky="w", pady=5)
+f_m1_ps.grid(row=3, column=0, columnspan=8, sticky="w", pady=5)
 
-# 外部参考面板
-f_m0_ref = ttk.Frame(etab_m0)
-m0_ref_path, m0_ref_style = tk.StringVar(), tk.StringVar()
-f_m0_rtop = ttk.Frame(f_m0_ref)
-f_m0_rtop.pack(anchor="w", pady=5)
-ttk.Label(f_m0_rtop, text="外部 ASS 文件:").pack(side=tk.LEFT)
-ttk.Entry(f_m0_rtop, textvariable=m0_ref_path, width=30).pack(side=tk.LEFT, padx=5)
-ttk.Button(f_m0_rtop, text="浏览...", command=lambda: ask_file(m0_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
+f_m1_ref = ttk.Frame(etab_mod)
+m1_ref_path, m1_ref_style = tk.StringVar(), tk.StringVar()
 
-m0_ref_cb = ttk.Combobox(f_m0_rtop, textvariable=m0_ref_style, width=15)
-ttk.Button(f_m0_rtop, text="扫描样式 ->", command=lambda: scan_ref_for_cb(m0_ref_path.get(), m0_ref_cb, m0_ref_style)).pack(side=tk.LEFT, padx=5)
-m0_ref_cb.pack(side=tk.LEFT, padx=5)
+f_m1_top = ttk.Frame(f_m1_ref)
+f_m1_top.pack(anchor="w", pady=5)
+ttk.Label(f_m1_top, text="提供样式的外部 ASS 文件:").pack(side=tk.LEFT)
+ttk.Entry(f_m1_top, textvariable=m1_ref_path, width=30).pack(side=tk.LEFT, padx=5)
+ttk.Button(f_m1_top, text="浏览...", command=lambda: ask_file(m1_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
 
-f_m0_rbot = ttk.Frame(f_m0_ref)
-f_m0_rbot.pack(anchor="w", pady=5)
-e_m0_font_mode, e_m0_override_font = tk.IntVar(value=0), tk.StringVar(value="SimHei")
-ttk.Radiobutton(f_m0_rbot, text="保留参考样式的原始字体", variable=e_m0_font_mode, value=0).pack(side=tk.LEFT, padx=5)
-ttk.Radiobutton(f_m0_rbot, text="覆盖字体为:", variable=e_m0_font_mode, value=1).pack(side=tk.LEFT, padx=5)
-cb_m0_ref_font = ttk.Combobox(f_m0_rbot, textvariable=e_m0_override_font, width=25)
-cb_m0_ref_font.pack(side=tk.LEFT, padx=5)
+m1_ref_cb = ttk.Combobox(f_m1_top, textvariable=m1_ref_style, width=15)
+def scan_ref_1():
+    s = scan_ass_for_styles(m1_ref_path.get().strip())
+    k = list(s.keys())
+    m1_ref_cb['values'] = k
+    if k: m1_ref_style.set(k[0])
 
-update_m0_ui()
+ttk.Button(f_m1_top, text="扫描该参考文件中的样式 ->", command=scan_ref_1).pack(side=tk.LEFT, padx=5)
+m1_ref_cb.pack(side=tk.LEFT, padx=5)
 
-# === 注意：确保完全删除了 原功能4（etab_eff） 区块的所有代码 ===
+f_m1_bot = ttk.Frame(f_m1_ref)
+f_m1_bot.pack(anchor="w", pady=5)
+e_m1_font_mode = tk.IntVar(value=0)
+e_m1_override_font = tk.StringVar(value="SimHei")
+ttk.Radiobutton(f_m1_bot, text="保留参考样式的原始字体", variable=e_m1_font_mode, value=0).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f_m1_bot, text="覆盖字体为:", variable=e_m1_font_mode, value=1).pack(side=tk.LEFT, padx=5)
+cb_m1_ref_font = ttk.Combobox(f_m1_bot, textvariable=e_m1_override_font, width=25)
+cb_m1_ref_font.pack(side=tk.LEFT, padx=5)
+
 
 # ------ 功能2: 根据字符重新分配 ------
 etab_tag = ttk.Frame(edit_nb, padding=10); edit_nb.add(etab_tag, text="根据[]重划定对白/画面字")
@@ -2041,7 +1987,7 @@ cb_m2_ref_font.pack(side=tk.LEFT, padx=5)
 
 # ------ 功能3: 基于时间轴同步复制样式/特效 ------
 etab_sync = ttk.Frame(edit_nb, padding=10)
-edit_nb.add(etab_sync, text="依据时间轴复用样式")
+edit_nb.add(etab_sync, text="依据时间轴复用样式 ")
 etab_sync.columnconfigure(1, weight=1)
 
 m3_ref_dir = tk.StringVar()
@@ -2062,66 +2008,183 @@ ttk.Label(etab_sync, text="时间轴不匹配报错报告保存至:").grid(row=3
 ttk.Entry(etab_sync, textvariable=m3_err_rep).grid(row=3, column=1, sticky="ew", padx=5)
 ttk.Button(etab_sync, text="浏览...", command=lambda: ask_save_file(m3_err_rep, "保存", [("Excel", "*.xlsx")], ".xlsx")).grid(row=3, column=2)
 
-# ------ 功能3: 批量/条件定位正则替换 (合并原功能5和6) ------
-etab_f4 = ttk.Frame(edit_nb, padding=10)
-edit_nb.add(etab_f4, text="批量/条件正则替换")
+# ------ 功能4: 根据特效说明(Effect)重划样式 ------
+etab_eff = ttk.Frame(edit_nb, padding=10)
+edit_nb.add(etab_eff, text=" 4:查找特效列改样式 ")
+etab_eff.columnconfigure(1, weight=1)
 
-f4_format_var = tk.StringVar(value="ASS")
-def update_f4_cols():
-    if f4_format_var.get() == "ASS":
-        cb_f4_tgt['values'] = ASS_COLS
-        f4_target_col.set(ASS_COLS[9])
-        cb_f4_c1['values'] = ASS_COLS
-        f4_cond1_col.set(ASS_COLS[8])
-        cb_f4_c2['values'] = ASS_COLS
-        f4_cond2_col.set(ASS_COLS[3])
+edit_m4_target_var = tk.StringVar()
+ttk.Label(etab_eff, text="选择输入 ASS 中要修改的特效名:").grid(row=0, column=0, sticky="e", pady=5)
+edit_m4_target_cb = ttk.Combobox(etab_eff, textvariable=edit_m4_target_var, width=15)
+edit_m4_target_cb.grid(row=0, column=1, sticky="w", padx=5)
+
+def scan_input_effects():
+    d = edit_in_var.get().strip()
+    if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先选择输入文件夹！")
+    ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
+    if not ass_files: return messagebox.showwarning("提示", "输入文件夹中没有找到 .ass 文件！")
+    all_effs = set()
+    for filepath in ass_files:
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
+            for line in f:
+                if line.startswith('Dialogue:'):
+                    parts = line.strip().split(',', 9)
+                    if len(parts) >= 10 and parts[8].strip(): all_effs.add(parts[8].strip())
+    names = list(all_effs)
+    if not names: return messagebox.showwarning("提示", "所有文件中都没有扫描到任何特效说明！")
+    edit_m4_target_cb['values'] = names
+    edit_m4_target_var.set(names[0])
+    messagebox.showinfo("成功", f"扫描完毕，在所有文件中发现 {len(names)} 个特效说明！")
+
+ttk.Button(etab_eff, text="一键扫描并列出特效", command=scan_input_effects).grid(row=0, column=2, sticky="w", padx=5)
+
+edit_m4_mode = tk.IntVar(value=0)
+def update_m4_ui():
+    if edit_m4_mode.get() == 0:
+        f_m4_custom.grid(row=2, column=0, columnspan=3, sticky="ew"); f_m4_ref.grid_remove()
     else:
-        cb_f4_tgt['values'] = SRT_COLS
-        f4_target_col.set(SRT_COLS[2])
-        cb_f4_c1['values'] = SRT_COLS
-        f4_cond1_col.set(SRT_COLS[0])
-        cb_f4_c2['values'] = SRT_COLS
-        f4_cond2_col.set(SRT_COLS[1])
+        f_m4_custom.grid_remove(); f_m4_ref.grid(row=2, column=0, columnspan=3, sticky="w")
 
-f4_top = ttk.Frame(etab_f4)
-f4_top.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
-ttk.Radiobutton(f4_top, text="处理 ASS 格式", variable=f4_format_var, value="ASS", command=update_f4_cols).pack(side=tk.LEFT, padx=5)
-ttk.Radiobutton(f4_top, text="处理 SRT 格式", variable=f4_format_var, value="SRT", command=update_f4_cols).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(etab_eff, text="使用下方自定义样式替换", variable=edit_m4_mode, value=0, command=update_m4_ui).grid(row=1, column=0, columnspan=2, sticky="w", pady=10)
+ttk.Radiobutton(etab_eff, text="从外部指定 ASS 偷取样式直接替换", variable=edit_m4_mode, value=1, command=update_m4_ui).grid(row=1, column=1, columnspan=2, sticky="w", pady=10)
 
-f4_target_col = tk.StringVar(value=ASS_COLS[9])
-ttk.Label(etab_f4, text="需要应用正则替换的列:").grid(row=1, column=0, sticky="e", pady=5)
-cb_f4_tgt = ttk.Combobox(etab_f4, textvariable=f4_target_col, values=ASS_COLS, width=15, state="readonly")
-cb_f4_tgt.grid(row=1, column=1, sticky="w", padx=5)
+f_m4_custom = ttk.Frame(etab_eff)
+e_m4_font, e_m4_size, e_m4_col, e_m4_ocol = tk.StringVar(value="SimHei"), tk.StringVar(value="60"), tk.StringVar(value="#FFFFFF"), tk.StringVar(value="#000000")
+e_m4_mv, e_m4_mlr, e_m4_outl = tk.StringVar(value="20"), tk.StringVar(value="20"), tk.StringVar(value="2")
+e_m4_align, e_m4_shad, e_m4_bold, e_m4_ita = tk.StringVar(value="2"), tk.StringVar(value="0"), tk.IntVar(value=0), tk.IntVar(value=0)
+e_m4_alpha, e_m4_outalpha = tk.StringVar(value="00"), tk.StringVar(value="00")
+cb_m4, c_btn_m4, oc_btn_m4 = build_style_tab(f_m4_custom, e_m4_font, e_m4_size, e_m4_col, e_m4_ocol, e_m4_mv, e_m4_mlr, e_m4_outl, e_m4_align, e_m4_shad, e_m4_bold, e_m4_ita, e_m4_alpha, e_m4_outalpha)
 
-ttk.Label(etab_f4, text="正则替换规则:").grid(row=2, column=0, sticky="ne", pady=5)
-f4_regex_text = tk.Text(etab_f4, height=3, width=45, font=('Arial', 9))
-f4_regex_text.grid(row=2, column=1, columnspan=3, sticky="w", padx=5, pady=5)
-f4_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n【(.*?)】 >>> [$1]")
+m4_preset_var = tk.StringVar()
+if current_presets_ass: m4_preset_var.set(list(current_presets_ass.keys())[0])
+# --- 新增：分辨率 UI ---
+e_m4_resx, e_m4_resy = tk.StringVar(value="1080"), tk.StringVar(value="1920")
+f_m4_res = ttk.Frame(f_m4_custom)
+f_m4_res.grid(row=3, column=0, columnspan=8, sticky="w", pady=(10, 0))
+ttk.Label(f_m4_res, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
+ttk.Entry(f_m4_res, textvariable=e_m4_resx, width=8).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_m4_res, text="(高/Y):").pack(side=tk.LEFT)
+ttk.Entry(f_m4_res, textvariable=e_m4_resy, width=8).pack(side=tk.LEFT, padx=5)
 
-f4_cond_frame = ttk.LabelFrame(etab_f4, text="可选过滤条件 (都不勾选则为针对目标列的全量批量替换)", padding=10)
-f4_cond_frame.grid(row=3, column=0, columnspan=4, sticky="ew", pady=10, padx=5)
+m4_preset_var = tk.StringVar()
+if current_presets_ass: m4_preset_var.set(list(current_presets_ass.keys())[0])
+f_m4_ps = create_ass_preset_bar(
+    f_m4_custom,
+    [e_m4_font, e_m4_size, e_m4_col, e_m4_ocol, e_m4_mv, e_m4_mlr, e_m4_outl, e_m4_align, e_m4_shad, e_m4_bold, e_m4_ita, e_m4_alpha, e_m4_outalpha], None, [c_btn_m4, oc_btn_m4],
+    m4_preset_var, [e_m4_resx, e_m4_resy]
+)
+f_m4_ps.grid(row=3, column=0, columnspan=8, sticky="w", pady=5)
 
-f4_use_cond1 = tk.IntVar(value=0)
-f4_cond1_col = tk.StringVar(value=ASS_COLS[8])
-f4_cond1_val = tk.StringVar()
-ttk.Checkbutton(f4_cond_frame, text="启用条件1 (列名):", variable=f4_use_cond1).grid(row=0, column=0, sticky="e", pady=5)
-cb_f4_c1 = ttk.Combobox(f4_cond_frame, textvariable=f4_cond1_col, values=ASS_COLS, width=15, state="readonly")
-cb_f4_c1.grid(row=0, column=1, sticky="w", padx=5)
-ttk.Label(f4_cond_frame, text="包含/匹配(正则):").grid(row=0, column=2, sticky="e", padx=(10,5))
-ttk.Entry(f4_cond_frame, textvariable=f4_cond1_val, width=20).grid(row=0, column=3, sticky="w", padx=5)
+f_m4_ref = ttk.Frame(etab_eff)
+m4_ref_path, m4_ref_style = tk.StringVar(), tk.StringVar()
 
-f4_use_cond2 = tk.IntVar(value=0)
-f4_cond2_col = tk.StringVar(value=ASS_COLS[3])
-f4_cond2_val = tk.StringVar()
-ttk.Checkbutton(f4_cond_frame, text="启用条件2 (列名):", variable=f4_use_cond2).grid(row=1, column=0, sticky="e", pady=5)
-cb_f4_c2 = ttk.Combobox(f4_cond_frame, textvariable=f4_cond2_col, values=ASS_COLS, width=15, state="readonly")
-cb_f4_c2.grid(row=1, column=1, sticky="w", padx=5)
-ttk.Label(f4_cond_frame, text="包含/匹配(正则):").grid(row=1, column=2, sticky="e", padx=(10,5))
-ttk.Entry(f4_cond_frame, textvariable=f4_cond2_val, width=20).grid(row=1, column=3, sticky="w", padx=5)
+f_m4_top = ttk.Frame(f_m4_ref)
+f_m4_top.pack(anchor="w", pady=5)
+ttk.Label(f_m4_top, text="提供样式的外部 ASS 文件:").pack(side=tk.LEFT)
+ttk.Entry(f_m4_top, textvariable=m4_ref_path, width=30).pack(side=tk.LEFT, padx=5)
+ttk.Button(f_m4_top, text="浏览...", command=lambda: ask_file(m4_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
+
+m4_ref_cb = ttk.Combobox(f_m4_top, textvariable=m4_ref_style, width=15)
+def scan_ref_4():
+    s = scan_ass_for_styles(m4_ref_path.get().strip())
+    k = list(s.keys())
+    m4_ref_cb['values'] = k
+    if k: m4_ref_style.set(k[0])
+
+ttk.Button(f_m4_top, text="扫描该参考文件中的样式 ->", command=scan_ref_4).pack(side=tk.LEFT, padx=5)
+m4_ref_cb.pack(side=tk.LEFT, padx=5)
+
+f_m4_bot = ttk.Frame(f_m4_ref)
+f_m4_bot.pack(anchor="w", pady=5)
+e_m4_font_mode = tk.IntVar(value=0)
+e_m4_override_font = tk.StringVar(value="SimHei")
+ttk.Radiobutton(f_m4_bot, text="保留参考样式的原始字体", variable=e_m4_font_mode, value=0).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f_m4_bot, text="覆盖字体为:", variable=e_m4_font_mode, value=1).pack(side=tk.LEFT, padx=5)
+cb_m4_ref_font = ttk.Combobox(f_m4_bot, textvariable=e_m4_override_font, width=25)
+cb_m4_ref_font.pack(side=tk.LEFT, padx=5)
+
+ASS_COLS = ["0: Layer", "1: Start", "2: End", "3: Style", "4: Name", "5: MarginL", "6: MarginR", "7: MarginV", "8: Effect", "9: Text"]
+SRT_COLS = ["0: ID", "1: Timeline", "2: Text"]
+
+# ------ 功能5: 单列批量正则替换 ------
+etab_f5 = ttk.Frame(edit_nb, padding=10)
+edit_nb.add(etab_f5, text=" 5:指定列批量正则替换 ")
+
+f5_format_var = tk.StringVar(value="ASS")
+def update_f5_cols():
+    if f5_format_var.get() == "ASS":
+        cb_f5_col['values'] = ASS_COLS
+        f5_col_var.set(ASS_COLS[9])
+    else:
+        cb_f5_col['values'] = SRT_COLS
+        f5_col_var.set(SRT_COLS[2])
+
+f5_top = ttk.Frame(etab_f5)
+f5_top.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 10))
+ttk.Radiobutton(f5_top, text="处理 ASS 格式", variable=f5_format_var, value="ASS", command=update_f5_cols).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f5_top, text="处理 SRT 格式", variable=f5_format_var, value="SRT", command=update_f5_cols).pack(side=tk.LEFT, padx=5)
+
+f5_col_var = tk.StringVar(value=ASS_COLS[9])
+ttk.Label(etab_f5, text="选择要应用正则替换的列:").grid(row=1, column=0, sticky="e", pady=10)
+cb_f5_col = ttk.Combobox(etab_f5, textvariable=f5_col_var, values=ASS_COLS, width=15, state="readonly")
+cb_f5_col.grid(row=1, column=1, sticky="w", padx=5)
+
+ttk.Label(etab_f5, text="正则表达式替换规则:").grid(row=2, column=0, sticky="ne", pady=5)
+f5_regex_text = tk.Text(etab_f5, height=5, width=50, font=('Arial', 9))
+f5_regex_text.grid(row=2, column=1, sticky="w", padx=5, pady=5)
+f5_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n将当前列的【】替换为[]，输入【(.*?)】 >>> [$1]")
+
+
+# ------ 功能6: 条件定位正则替换 ------
+etab_f6 = ttk.Frame(edit_nb, padding=10)
+edit_nb.add(etab_f6, text=" 6:条件定位后正则替换 ")
+
+f6_format_var = tk.StringVar(value="ASS")
+def update_f6_cols():
+    if f6_format_var.get() == "ASS":
+        cb_f6_c1['values'] = ASS_COLS; f6_cond1_col.set(ASS_COLS[8])
+        cb_f6_c2['values'] = ASS_COLS; f6_cond2_col.set(ASS_COLS[3])
+        cb_f6_tgt['values'] = ASS_COLS; f6_target_col.set(ASS_COLS[9])
+    else:
+        cb_f6_c1['values'] = SRT_COLS; f6_cond1_col.set(SRT_COLS[0])
+        cb_f6_c2['values'] = SRT_COLS; f6_cond2_col.set(SRT_COLS[1])
+        cb_f6_tgt['values'] = SRT_COLS; f6_target_col.set(SRT_COLS[2])
+
+f6_top = ttk.Frame(etab_f6)
+f6_top.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
+ttk.Radiobutton(f6_top, text="处理 ASS 格式", variable=f6_format_var, value="ASS", command=update_f6_cols).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f6_top, text="处理 SRT 格式", variable=f6_format_var, value="SRT", command=update_f6_cols).pack(side=tk.LEFT, padx=5)
+
+f6_cond1_col = tk.StringVar(value=ASS_COLS[8])
+f6_cond1_val = tk.StringVar()
+ttk.Label(etab_f6, text="查找条件1 (列名):").grid(row=1, column=0, sticky="e", pady=5)
+cb_f6_c1 = ttk.Combobox(etab_f6, textvariable=f6_cond1_col, values=ASS_COLS, width=15, state="readonly")
+cb_f6_c1.grid(row=1, column=1, sticky="w", padx=5)
+ttk.Label(etab_f6, text="包含/匹配(正则):").grid(row=1, column=2, sticky="e", padx=(10,5))
+ttk.Entry(etab_f6, textvariable=f6_cond1_val, width=20).grid(row=1, column=3, sticky="w", padx=5)
+
+f6_use_cond2 = tk.IntVar(value=0)
+f6_cond2_col = tk.StringVar(value=ASS_COLS[3])
+f6_cond2_val = tk.StringVar()
+ttk.Checkbutton(etab_f6, text="查找条件2 (列名):", variable=f6_use_cond2).grid(row=2, column=0, sticky="e", pady=5)
+cb_f6_c2 = ttk.Combobox(etab_f6, textvariable=f6_cond2_col, values=ASS_COLS, width=15, state="readonly")
+cb_f6_c2.grid(row=2, column=1, sticky="w", padx=5)
+ttk.Label(etab_f6, text="包含/匹配(正则):").grid(row=2, column=2, sticky="e", padx=(10,5))
+ttk.Entry(etab_f6, textvariable=f6_cond2_val, width=20).grid(row=2, column=3, sticky="w", padx=5)
+
+f6_target_col = tk.StringVar(value=ASS_COLS[9])
+ttk.Label(etab_f6, text="需要替换的列名:").grid(row=3, column=0, sticky="e", pady=15)
+cb_f6_tgt = ttk.Combobox(etab_f6, textvariable=f6_target_col, values=ASS_COLS, width=15, state="readonly")
+cb_f6_tgt.grid(row=3, column=1, sticky="w", padx=5)
+
+ttk.Label(etab_f6, text="正则替换规则:").grid(row=4, column=0, sticky="ne", pady=5)
+f6_regex_text = tk.Text(etab_f6, height=3, width=45, font=('Arial', 9))
+f6_regex_text.grid(row=4, column=1, columnspan=3, sticky="w", padx=5, pady=5)
+f6_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么")
 
 # ------ 功能7: 手动选中修改样式 ------
 etab_f7 = ttk.Frame(edit_nb, padding=5)
-edit_nb.add(etab_f7, text="手动选中行改样式")
+edit_nb.add(etab_f7, text=" 7:手动选中行改样式 ")
 
 f7_top = ttk.Frame(etab_f7)
 f7_top.pack(fill=tk.X, pady=5)
@@ -2242,9 +2305,10 @@ def execute_ass_editor():
     
     mode = edit_nb.index(edit_nb.select())
 
-    # 新索引：3为正则替换，4为手动选择
+    # --- 新增：动态识别需要处理的文件格式 ---
     fmt = "ASS"
-    if mode == 3: fmt = f4_format_var.get()
+    if mode == 4: fmt = f5_format_var.get()
+    elif mode == 5: fmt = f6_format_var.get()
     
     ext = '.srt' if fmt == "SRT" else '.ass'
     files = [f for f in os.listdir(i_dir) if f.lower().endswith(ext)]
@@ -2260,16 +2324,21 @@ def execute_ass_editor():
     global_ref_resx, global_ref_resy = None, None
     rp = None
     if mode == 0:
-        if edit_m0_mode.get() == 1: rp = m0_ref_path.get().strip()
+        if edit_m1_mode.get() == 1: rp = m1_ref_path.get().strip()
         else:
-            if e_m0_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m0_resx.get().strip()}"
-            if e_m0_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m0_resy.get().strip()}"
+            if e_m1_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m1_resx.get().strip()}"
+            if e_m1_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m1_resy.get().strip()}"
     elif mode == 1:
         if edit_m2_mode.get() == 1: rp = m2_ref_path.get().strip()
         else:
             if e_m2_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m2_resx.get().strip()}"
             if e_m2_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m2_resy.get().strip()}"
-    elif mode == 4:
+    elif mode == 3:
+        if edit_m4_mode.get() == 1: rp = m4_ref_path.get().strip()
+        else:
+            if e_m4_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m4_resx.get().strip()}"
+            if e_m4_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m4_resy.get().strip()}"
+    elif mode == 6:
         if edit_m7_mode.get() == 1: rp = m7_ref_path.get().strip()
         else:
             if e_m7_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m7_resx.get().strip()}"
@@ -2281,8 +2350,10 @@ def execute_ass_editor():
                 if l.startswith('PlayResX:'): global_ref_resx = l.strip()
                 elif l.startswith('PlayResY:'): global_ref_resy = l.strip()
     
+    # 解析正则规则引擎
     regex_rules = []
-    if mode == 3: raw_text = f4_regex_text.get("1.0", tk.END).split('\n')
+    if mode == 4: raw_text = f5_regex_text.get("1.0", tk.END).split('\n')
+    elif mode == 5: raw_text = f6_regex_text.get("1.0", tk.END).split('\n')
     else: raw_text = []
     for line in raw_text:
         if '>>>' in line:
@@ -2291,32 +2362,39 @@ def execute_ass_editor():
             regex_rules.append((pat.strip(), repl_python))
 
     for file in files:
-        if mode == 4 and file != m7_file_var.get().strip(): continue
+        # Mode 6 (功能7): 只处理用户下拉框中手动选中的那一个文件
+        if mode == 6 and file != m7_file_var.get().strip(): continue
         
         in_path, out_path = os.path.join(i_dir, file), os.path.join(o_dir, file)
         
-        # ====== SRT 格式文件独立处理逻辑 ======
-        if fmt == "SRT" and mode == 3:
+        # ====== 新增：SRT 格式文件独立处理逻辑 ======
+        if fmt == "SRT" and mode in [4, 5]:
             blocks = parse_srt_file(in_path)
             for block in blocks:
                 p = [block['ID'], block['Timeline'], block['Text']]
                 
-                c1_idx = int(f4_cond1_col.get().split(':')[0])
-                c1_val = f4_cond1_val.get().strip()
-                c2_idx = int(f4_cond2_col.get().split(':')[0])
-                c2_val = f4_cond2_val.get().strip()
-                tgt_idx = int(f4_target_col.get().split(':')[0])
-                
-                is_match = True
-                if f4_use_cond1.get() == 1 and c1_val:
-                    if not re.search(c1_val, p[c1_idx]): is_match = False
-                if f4_use_cond2.get() == 1 and c2_val and is_match:
-                    if not re.search(c2_val, p[c2_idx]): is_match = False
-                    
-                if is_match:
+                if mode == 4:
+                    f5_col_idx = int(f5_col_var.get().split(':')[0])
                     for pat, repl in regex_rules:
-                        p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
+                        p[f5_col_idx] = re.sub(pat, repl, p[f5_col_idx])
                         
+                elif mode == 5:
+                    c1_idx = int(f6_cond1_col.get().split(':')[0])
+                    c1_val = f6_cond1_val.get().strip()
+                    c2_idx = int(f6_cond2_col.get().split(':')[0])
+                    c2_val = f6_cond2_val.get().strip()
+                    tgt_idx = int(f6_target_col.get().split(':')[0])
+                    use_c2 = f6_use_cond2.get() == 1
+                    
+                    is_match = True
+                    if c1_val and not re.search(c1_val, p[c1_idx]): is_match = False
+                    if use_c2 and c2_val and is_match:
+                        if not re.search(c2_val, p[c2_idx]): is_match = False
+                        
+                    if is_match:
+                        for pat, repl in regex_rules:
+                            p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
+                            
                 block['ID'] = p[0]
                 block['Timeline'] = p[1]
                 block['Text'] = p[2]
@@ -2325,9 +2403,10 @@ def execute_ass_editor():
             with open(out_path, 'w', encoding='utf-8') as f:
                 f.write("\n".join(srt_content))
             continue
+        # ========================================
 
-        # ================= ASS 处理 =================
         with open(in_path, 'r', encoding='utf-8-sig') as f: content = f.read()
+        
         lines = content.split('\n')
         h_lines, s_lines, ev_lines = [], [], []
         curr = "info"
@@ -2363,54 +2442,29 @@ def execute_ass_editor():
             if not has_x: h_lines.append(ref_resx)
             if not has_y: h_lines.append(ref_resy)
 
-        # ====== 功能0: 依指定列多选改样式 ======
+        # ====== 功能1: 修改已有样式 ======
         if mode == 0:
-            sel_idxs = lb_m0_vals.curselection()
-            if not sel_idxs: return messagebox.showwarning("警告", "请在列表中选中至少一项要修改的数据！")
-            sel_vals = set(lb_m0_vals.get(i) for i in sel_idxs)
-            col_idx = int(m0_col_var.get().split(':')[0])
-            
-            new_style_name = m0_target_style_var.get().strip()
-            if not new_style_name: return messagebox.showwarning("警告", "请输入赋予的新样式名称！")
+            target = edit_m1_target_var.get()
+            if not target: return messagebox.showwarning("警告", "请选择你要修改的样式！")
             
             new_line = ""
-            if edit_m0_mode.get() == 0:
-                new_line = build_ass_style_line(new_style_name, e_m0_font.get(), e_m0_size.get(), e_m0_col.get(), e_m0_ocol.get(), e_m0_mv.get(), e_m0_mlr.get(), e_m0_outl.get(), e_m0_align.get(), e_m0_shad.get(), e_m0_bold.get(), e_m0_ita.get(), e_m0_alpha.get(), e_m0_outalpha.get())
+            if edit_m1_mode.get() == 0:
+                new_line = build_ass_style_line(target, e_m1_font.get(), e_m1_size.get(), e_m1_col.get(), e_m1_ocol.get(), e_m1_mv.get(), e_m1_mlr.get(), e_m1_outl.get(), e_m1_align.get(), e_m1_shad.get(), e_m1_bold.get(), e_m1_ita.get(), e_m1_alpha.get(), e_m1_outalpha.get())
             else:
-                rp, rs = m0_ref_path.get(), m0_ref_style.get()
+                rp, rs = m1_ref_path.get(), m1_ref_style.get()
                 if not os.path.exists(rp) or not rs: return messagebox.showwarning("警告", "请正确提供参考文件和样式！")
                 ref_dict = scan_all_styles_from_ass(rp)
                 if rs not in ref_dict: return messagebox.showwarning("错误", "参考中没找到该样式")
-                new_line = rename_style_line(ref_dict[rs], new_style_name)
-                if e_m0_font_mode.get() == 1:
-                    new_line = replace_font_in_style(new_line, e_m0_override_font.get())
+                new_line = rename_style_line(ref_dict[rs], target)
+                if e_m1_font_mode.get() == 1:
+                    new_line = replace_font_in_style(new_line, e_m1_override_font.get())
 
-            matched_any = False
-            new_ev = []
-            for ev in ev_lines:
-                if ev.startswith('Dialogue:'):
-                    p = ev.split(',', 9)
-                    if len(p) > col_idx and p[col_idx].strip() in sel_vals:
-                        p[3] = new_style_name  # 统一将 Style 引用修改为新样式
-                        matched_any = True
-                        new_ev.append(",".join(p))
-                    else:
-                        new_ev.append(ev)
-                else:
-                    new_ev.append(ev)
-            ev_lines = new_ev
-
-            if matched_any:
-                rep = False
-                for i, sl in enumerate(s_lines):
-                    if sl.startswith('Style:') and sl.split('Style:')[1].split(',')[0].strip() == new_style_name:
-                        s_lines[i] = new_line
-                        rep = True
-                if not rep: s_lines.append(new_line)
-                
+            for i, l in enumerate(s_lines):
+                if l.strip().startswith('Style:') and l.split('Style:')[1].split(',')[0].strip() == target:
+                    s_lines[i] = new_line
+            
         # ====== 功能2: 根据字符重划样式并拆分 ======
         elif mode == 1:
-            # ---> (保留下方原代码不要动) <---
             b = edit_m2_bracket.get().strip()
             l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
             
@@ -2523,13 +2577,69 @@ def execute_ass_editor():
                             s_lines[i] = n_line; rep = True
                     if not rep: s_lines.append(n_line)
 
-        # ====== 功能3: 批量/条件定位正则替换 (合并后的新功能) ======
+        # ====== 功能4: 根据特效说明(Effect)改样式 ======
         elif mode == 3:
-            c1_idx = int(f4_cond1_col.get().split(':')[0])
-            c1_val = f4_cond1_val.get().strip()
-            c2_idx = int(f4_cond2_col.get().split(':')[0])
-            c2_val = f4_cond2_val.get().strip()
-            tgt_idx = int(f4_target_col.get().split(':')[0])
+            target_eff = edit_m4_target_var.get()
+            if not target_eff: return messagebox.showwarning("警告", "请选择要修改样式的特效说明！")
+            
+            new_line = ""
+            new_style_name = ""
+            
+            if edit_m4_mode.get() == 0:
+                new_style_name = f"Effect_{target_eff}"
+                new_line = build_ass_style_line(new_style_name, e_m4_font.get(), e_m4_size.get(), e_m4_col.get(), e_m4_ocol.get(), e_m4_mv.get(), e_m4_mlr.get(), e_m4_outl.get(), e_m4_align.get(), e_m4_shad.get(), e_m4_bold.get(), e_m4_ita.get(), e_m4_alpha.get(), e_m4_outalpha.get())
+            else:
+                rp, rs = m4_ref_path.get(), m4_ref_style.get()
+                if not os.path.exists(rp) or not rs: return messagebox.showwarning("警告", "请提供参考文件和样式！")
+                ref_dict = scan_all_styles_from_ass(rp)
+                if rs not in ref_dict: return messagebox.showwarning("错误", "参考文件中没找到该样式")
+                new_style_name = rs
+                new_line = rename_style_line(ref_dict[rs], rs)
+                if e_m4_font_mode.get() == 1:
+                    new_line = replace_font_in_style(new_line, e_m4_override_font.get())
+            
+            eff_found = False
+            new_ev = []
+            for ev in ev_lines:
+                if ev.startswith('Dialogue:'):
+                    p = ev.split(',', 9)
+                    if len(p) >= 10 and p[8].strip() == target_eff:
+                        p[3] = new_style_name
+                        eff_found = True
+                    new_ev.append(",".join(p))
+                else:
+                    new_ev.append(ev)
+            ev_lines = new_ev
+            
+            if eff_found:
+                rep = False
+                for i, sl in enumerate(s_lines):
+                    if sl.startswith('Style:') and sl.split('Style:')[1].split(',')[0].strip() == new_style_name:
+                        s_lines[i] = new_line; rep = True
+                if not rep: s_lines.append(new_line)
+        # ====== 功能5: 单列批量正则替换 ======
+        elif mode == 4:
+            f5_col_idx = int(f5_col_var.get().split(':')[0])
+            new_ev = []
+            for ev in ev_lines:
+                if ev.startswith('Dialogue:'):
+                    p = ev.split(',', 9)
+                    if len(p) >= 10:
+                        for pat, repl in regex_rules:
+                            p[f5_col_idx] = re.sub(pat, repl, p[f5_col_idx])
+                        new_ev.append(",".join(p))
+                    else: new_ev.append(ev)
+                else: new_ev.append(ev)
+            ev_lines = new_ev
+
+        # ====== 功能6: 条件定位后正则替换 ======
+        elif mode == 5:
+            c1_idx = int(f6_cond1_col.get().split(':')[0])
+            c1_val = f6_cond1_val.get().strip()
+            c2_idx = int(f6_cond2_col.get().split(':')[0])
+            c2_val = f6_cond2_val.get().strip()
+            tgt_idx = int(f6_target_col.get().split(':')[0])
+            use_c2 = f6_use_cond2.get() == 1
             
             new_ev = []
             for ev in ev_lines:
@@ -2537,9 +2647,8 @@ def execute_ass_editor():
                     p = ev.split(',', 9)
                     if len(p) >= 10:
                         is_match = True
-                        if f4_use_cond1.get() == 1 and c1_val:
-                            if not re.search(c1_val, p[c1_idx]): is_match = False
-                        if f4_use_cond2.get() == 1 and c2_val and is_match:
+                        if c1_val and not re.search(c1_val, p[c1_idx]): is_match = False
+                        if use_c2 and c2_val and is_match:
                             if not re.search(c2_val, p[c2_idx]): is_match = False
                             
                         if is_match:
@@ -2550,8 +2659,8 @@ def execute_ass_editor():
                 else: new_ev.append(ev)
             ev_lines = new_ev
 
-        # ====== 功能4: 手动选中行改样式 (原功能7) ======
-        elif mode == 4:
+        # ====== 功能7: 手动选中行改样式 ======
+        elif mode == 6:
             sel_items = m7_tree.selection()
             if not sel_items: return messagebox.showwarning("警告", "请在下方列表中点击选择你要修改的字幕行！")
             sel_indices = [int(m7_tree.item(item, 'values')[0]) for item in sel_items]
@@ -2600,56 +2709,36 @@ def execute_ass_editor():
 
 ttk.Button(tab_edit, text="执行批量 ASS 样式处理", command=execute_ass_editor, style='TButton').grid(row=3, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 
-# ================= TAB 7: 批量复用指定列(SRT/ASS) =================
+# ================= TAB 7: ASS 特效批量复用 =================
 tab_eff = ttk.Frame(nb_ass, padding=20)
-nb_ass.add(tab_eff, text=" 批量复用指定列(SRT/ASS) ")
+nb_ass.add(tab_eff, text=" ASS 特效批量复用 ")
 tab_eff.columnconfigure(1, weight=1)
-
-eff_fmt_var = tk.StringVar(value="ASS")
-eff_col_var = tk.StringVar(value=ASS_COLS[8])
-
-def update_eff_cols():
-    if eff_fmt_var.get() == "ASS":
-        cb_eff_col['values'] = ASS_COLS
-        eff_col_var.set(ASS_COLS[8])
-    else:
-        cb_eff_col['values'] = SRT_COLS
-        eff_col_var.set(SRT_COLS[2])
-
-f_eff_top = ttk.Frame(tab_eff)
-f_eff_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-ttk.Radiobutton(f_eff_top, text="处理 ASS 格式", variable=eff_fmt_var, value="ASS", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
-ttk.Radiobutton(f_eff_top, text="处理 SRT 格式", variable=eff_fmt_var, value="SRT", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
-
-ttk.Label(f_eff_top, text="需要复用覆盖的列:").pack(side=tk.LEFT, padx=(20, 5))
-cb_eff_col = ttk.Combobox(f_eff_top, textvariable=eff_col_var, values=ASS_COLS, width=15, state="readonly")
-cb_eff_col.pack(side=tk.LEFT)
 
 eff_src_var, eff_tgt_var = tk.StringVar(), tk.StringVar()
 eff_out_var, eff_err_var = tk.StringVar(), tk.StringVar()
 
-ttk.Label(tab_eff, text="提供数据的源文件夹:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_src_var).grid(row=1, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_src_var, "选择源文件夹")).grid(row=1, column=2, padx=5)
+ttk.Label(tab_eff, text="提供特效的源文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_src_var).grid(row=0, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_src_var, "选择源ASS文件夹")).grid(row=0, column=2, padx=5)
 
-ttk.Label(tab_eff, text="待接收数据的目标文件夹:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_tgt_var).grid(row=2, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_tgt_var, "选择目标文件夹")).grid(row=2, column=2, padx=5)
+ttk.Label(tab_eff, text="待接收特效的文件夹:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_tgt_var).grid(row=1, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_tgt_var, "选择目标ASS文件夹")).grid(row=1, column=2, padx=5)
 
-ttk.Label(tab_eff, text="合成后的新文件输出至:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_out_var).grid(row=3, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_out_var, "选择输出文件夹")).grid(row=3, column=2, padx=5)
+ttk.Label(tab_eff, text="合成后的 ASS 目录:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_out_var).grid(row=2, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_out_var, "选择输出文件夹")).grid(row=2, column=2, padx=5)
 
-ttk.Label(tab_eff, text="行列不匹配报错报告保存至:").grid(row=4, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_err_var).grid(row=4, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_save_file(eff_err_var, "保存报错报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=4, column=2, padx=5)
+ttk.Label(tab_eff, text="(若有错误) 报错报告保存至:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_err_var).grid(row=3, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_save_file(eff_err_var, "保存报错报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=3, column=2, padx=5)
 
-ttk.Label(tab_eff, text="* 注：将基于【文件同名】和【行数顺序】进行精准的一对一覆盖提取。如果时间轴错位会记录在报告中", foreground="gray").grid(row=5, column=0, columnspan=3, pady=(0,10))
-ttk.Button(tab_eff, text="执行指定列批量复制", command=run_column_copy, style='TButton').grid(row=6, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+ttk.Label(tab_eff, text="* 注：批量处理时将通过【文件名】和【时间轴】进行一一对应提取", foreground="gray").grid(row=4, column=0, columnspan=3, pady=(0,10))
+ttk.Button(tab_eff, text="执行特效列批量复制", command=run_ass_effect_copy, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 
 # ================= TAB 10: ASS 拆分 (画面字/普通字) =================
 tab_ass_split = ttk.Frame(nb_ass, padding=10)
-nb_ass.add(tab_ass_split, text=" ASS拆分(画面/对白) ")
+nb_ass.add(tab_ass_split, text=" ASS 拆分 (画面/普通) ")
 tab_ass_split.columnconfigure(1, weight=1)
 
 split_ass_in_var = tk.StringVar()
@@ -2805,23 +2894,26 @@ try:
     fonts = list(tkfont.families())
     n_cb['values'] = fonts
     s_cb['values'] = fonts
-    cb_m0['values'] = fonts     # 新增
+    cb_m1['values'] = fonts
     cb_m2n['values'] = fonts
     cb_m2s['values'] = fonts
+    cb_m4['values'] = fonts
     cb_msn['values'] = fonts
     cb_mss['values'] = fonts
     
     cb_ref_font_5['values'] = fonts
     cb_ref_font_9['values'] = fonts
-    cb_m0_ref_font['values'] = fonts  # 新增
+    cb_m1_ref_font['values'] = fonts
     cb_m2_ref_font['values'] = fonts
+    cb_m4_ref_font['values'] = fonts
     
     cb_m7['values'] = fonts
     cb_m7_ref_font['values'] = fonts
 except: pass
 
-update_m0_ui() # 更新此处
+update_m1_ui()
 update_m2_ui()
+update_m4_ui()
 update_ass_style_mode_5()
 update_ms_style_mode_9()
 
