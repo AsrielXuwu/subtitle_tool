@@ -10,7 +10,7 @@ jobs:
     strategy:
       matrix:
         # 增加 macos-13 (Intel x86_64) 和 macos-14 (Apple Silicon ARM64)
-        os: [windows-latest, macos-13, macos-14]
+        os: [windows-latest, macos-15-intel, macos-14]
         include:
           - os: windows-latest
             artifact_name: SubtitleTool-Windows

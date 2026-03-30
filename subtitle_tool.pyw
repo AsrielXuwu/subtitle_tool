@@ -21,7 +21,7 @@ except ImportError:
 global_ass_memory_cache = {}
 
 # ================= 预设配置文件 (跨平台兼容版) =================
-# 解决 PyInstaller 在 macOS 打包后无权限在当前目录读写 json 文件
+# 解决 PyInstaller 在 macOS 打包后无权限在当前目录读写 json 文件的问题
 def get_config_dir():
     if platform.system() == 'Windows':
         # Windows: 存在 AppData 下
