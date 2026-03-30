@@ -1,74 +1,74 @@
 name: Subtitle Tool Build
 
 on:
+  # 允许在 GitHub 网页端手动点击运行
+  workflow_dispatch: 
+  # 当推送 v 开头的 tag 时自动触发 Release (例如: git tag v1.0.0 && git push origin v1.0.0)
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 jobs:
   build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # 增加 macos-13 (Intel x86_64) 和 macos-14 (Apple Silicon ARM64)
-        os: [windows-latest, macos-13, macos-14]
         include:
+          # Windows x64
           - os: windows-latest
-            artifact_name: SubtitleTool-Windows
-            output_name: SubtitleToolbox.exe
+            artifact_name: SubtitleTool-Windows-x64.exe
+            asset_name: SubtitleTool-Windows-x64.exe
+          # macOS Intel (x86_64)
           - os: macos-13
-            artifact_name: SubtitleTool-macOS-Intel
-            output_name: SubtitleToolbox.app
+            artifact_name: SubtitleTool-macOS-Intel.zip
+            asset_name: SubtitleTool-macOS-Intel.zip
+          # macOS Apple Silicon (ARM64)
           - os: macos-14
-            artifact_name: SubtitleTool-macOS-AppleSilicon
-            output_name: SubtitleToolbox.app
-
-    runs-on: ${{ matrix.os }}
+            artifact_name: SubtitleTool-macOS-AppleSilicon.zip
+            asset_name: SubtitleTool-macOS-AppleSilicon.zip
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout Code
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-        cache: 'pip'
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # 3.11 对各库兼容性最佳
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller pandas openpyxl
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # 包含了你代码中引用的所有库，以及 pandas 读写 excel 必须的 openpyxl
+          pip install pyinstaller pandas openpyxl opencv-python pillow
 
-    # Windows 的打包指令保持不变
-    - name: Build with PyInstaller (Windows)
-      if: matrix.os == 'windows-latest'
-      run: |
-        # --noconsole 隐藏黑窗口，--onefile 打包为单文件
-        pyinstaller --noconsole --onefile --name "SubtitleToolbox" subtitle_tool.pyw
+      - name: Build Executable (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          pyinstaller --noconfirm --onefile --windowed --name SubtitleTool subtitle_tool.pyw
+          Move-Item dist\SubtitleTool.exe dist\${{ matrix.asset_name }}
 
-    # macOS 打包指令：使用 startsWith 适配所有 macos 开头的系统
-    - name: Build with PyInstaller (macOS)
-      if: startsWith(matrix.os, 'macos')
-      run: |
-        # --windowed 打包为 macOS 标准的 .app 格式
-        pyinstaller --windowed --name "SubtitleToolbox" subtitle_tool.pyw
+      - name: Build Executable (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # Mac 下 windowed 参数会自动生成 .app 应用程序包
+          pyinstaller --noconfirm --windowed --name SubtitleTool subtitle_tool.pyw
+          cd dist
+          # 压缩 .app 防止下载后权限丢失导致 "文件已损坏" 报错
+          zip -r ${{ matrix.asset_name }} SubtitleTool.app
 
-    # 整理成品文件夹
-    - name: Prepare Artifacts
-      shell: bash
-      run: |
-        mkdir -p release_dist
-        # 判断如果是 windows 开头，则拷贝 exe；否则都按 macOS 的 .app 文件夹处理
-        if [[ "${{ matrix.os }}" == windows* ]]; then
-          cp dist/SubtitleToolbox.exe release_dist/
-        else
-          # macOS 打包出的 .app 其实是一个文件夹，需要整体拷贝
-          cp -r dist/SubtitleToolbox.app release_dist/
-        fi
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          retention-days: 7
 
-    # 上传至 GitHub 界面供下载
-    - name: Upload result
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.artifact_name }}
-        path: release_dist/
+      - name: Create GitHub Release
+        # 仅当触发条件是推送 tag 时才自动创建 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/${{ matrix.asset_name }}
+          generate_release_notes: true
