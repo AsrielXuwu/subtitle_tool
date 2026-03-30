@@ -9,14 +9,17 @@ jobs:
   build:
     strategy:
       matrix:
-        # 同时在 Windows 和 macOS 虚拟机上运行
-        os: [windows-latest, macos-latest]
+        # 增加 macos-13 (Intel x86_64) 和 macos-14 (Apple Silicon ARM64)
+        os: [windows-latest, macos-13, macos-14]
         include:
           - os: windows-latest
             artifact_name: SubtitleTool-Windows
             output_name: SubtitleToolbox.exe
-          - os: macos-latest
-            artifact_name: SubtitleTool-macOS
+          - os: macos-13
+            artifact_name: SubtitleTool-macOS-Intel
+            output_name: SubtitleToolbox.app
+          - os: macos-14
+            artifact_name: SubtitleTool-macOS-AppleSilicon
             output_name: SubtitleToolbox.app
 
     runs-on: ${{ matrix.os }}
@@ -36,15 +39,16 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller pandas openpyxl
 
-    # 根据不同平台执行不同的 PyInstaller 打包指令
+    # Windows 的打包指令保持不变
     - name: Build with PyInstaller (Windows)
       if: matrix.os == 'windows-latest'
       run: |
         # --noconsole 隐藏黑窗口，--onefile 打包为单文件
         pyinstaller --noconsole --onefile --name "SubtitleToolbox" subtitle_tool.pyw
 
+    # macOS 打包指令：使用 startsWith 适配所有 macos 开头的系统
     - name: Build with PyInstaller (macOS)
-      if: matrix.os == 'macos-latest'
+      if: startsWith(matrix.os, 'macos')
       run: |
         # --windowed 打包为 macOS 标准的 .app 格式
         pyinstaller --windowed --name "SubtitleToolbox" subtitle_tool.pyw
@@ -54,7 +58,8 @@ jobs:
       shell: bash
       run: |
         mkdir -p release_dist
-        if [ "${{ matrix.os }}" == "windows-latest" ]; then
+        # 判断如果是 windows 开头，则拷贝 exe；否则都按 macOS 的 .app 文件夹处理
+        if [[ "${{ matrix.os }}" == windows* ]]; then
           cp dist/SubtitleToolbox.exe release_dist/
         else
           # macOS 打包出的 .app 其实是一个文件夹，需要整体拷贝
