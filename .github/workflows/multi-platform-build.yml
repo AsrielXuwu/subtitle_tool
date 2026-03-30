@@ -20,7 +20,7 @@ jobs:
             artifact_name: SubtitleTool-Windows-x64.exe
             asset_name: SubtitleTool-Windows-x64.exe
           # macOS Intel (x86_64)
-          - os: macos-13
+          - os: macos-15-intel
             artifact_name: SubtitleTool-macOS-Intel.zip
             asset_name: SubtitleTool-macOS-Intel.zip
           # macOS Apple Silicon (ARM64)
