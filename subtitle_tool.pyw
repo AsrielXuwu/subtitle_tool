@@ -3069,6 +3069,33 @@ def execute_ass_editor(stage_only=False):
                             s_lines[i] = n_line; rep = True
                     if not rep: s_lines.append(n_line)
 
+        # ====== 功能3 (批量/条件正则替换 - ASS处理) ======
+        elif mode == 3:
+            tgt_idx = int(f4_target_col.get().split(':')[0])
+            c1_idx = int(f4_cond1_col.get().split(':')[0])
+            c1_val = f4_cond1_val.get().strip()
+            c2_idx = int(f4_cond2_col.get().split(':')[0])
+            c2_val = f4_cond2_val.get().strip()
+            
+            new_ev = []
+            for ev in ev_lines:
+                if ev.startswith('Dialogue:'):
+                    p = ev.split(',', 9)
+                    if len(p) >= 10:
+                        is_match = True
+                        if f4_use_cond1.get() == 1 and c1_val:
+                            if not re.search(c1_val, p[c1_idx]): is_match = False
+                        if f4_use_cond2.get() == 1 and c2_val and is_match:
+                            if not re.search(c2_val, p[c2_idx]): is_match = False
+                            
+                        if is_match:
+                            for pat, repl in regex_rules:
+                                p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
+                        new_ev.append(",".join(p))
+                    else: new_ev.append(ev)
+                else: new_ev.append(ev)
+            ev_lines = new_ev
+
         # ====== 功能4 ======
         elif mode == 4:
             sel_items = m7_tree.selection()
