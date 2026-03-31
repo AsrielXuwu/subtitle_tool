@@ -776,7 +776,7 @@ def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict
             
     return len(all_files)
 
-def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles):
+def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, to_srt=False):
     """根据组合条件将 ASS 拆分为画面字和普通字两个文件"""
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
     if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
@@ -788,6 +788,25 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, us
     if use_c1 and len(bracket_str) >= 2:
         half = len(bracket_str) // 2
         l_b, r_b = bracket_str[:half], bracket_str[half:]
+        
+    def ass_to_srt_time(ass_time):
+        h, m, s_ms = ass_time.strip().split(':')
+        s, ms = s_ms.split('.')
+        return f"{int(h):02d}:{int(m):02d}:{int(s):02d},{ms.ljust(3, '0')}"
+
+    def convert_to_srt_blocks(ev_list):
+        blocks = []
+        idx = 1
+        for ev in ev_list:
+            if ev.startswith('Dialogue:'):
+                parts = ev.split(',', 9)
+                if len(parts) >= 10:
+                    st = ass_to_srt_time(parts[1])
+                    ed = ass_to_srt_time(parts[2])
+                    txt = re.sub(r'\{.*?\}', '', parts[9]).replace('\\N', '\n').replace('\\n', '\n')
+                    blocks.append(f"{idx}\n{st} --> {ed}\n{txt}\n")
+                    idx += 1
+        return "\n".join(blocks)
         
     processed_count = 0
     for file in files:
@@ -816,22 +835,16 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, us
                     txt = parts[9]
                     c_txt = re.sub(r'\{.*?\}', '', txt).strip()
                     
-                    # 组合条件判断（AND 逻辑：勾选了的条件必须全部满足）
                     is_screen = True
                     if use_c1:
-                        if not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)):
-                            is_screen = False
+                        if not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): is_screen = False
                     if use_c2:
-                        if effect not in sel_effs:
-                            is_screen = False
+                        if effect not in sel_effs: is_screen = False
                     if use_c3:
-                        if style not in sel_styles:
-                            is_screen = False
+                        if style not in sel_styles: is_screen = False
                             
-                    if is_screen:
-                        screen_ev.append(ev)
-                    else:
-                        normal_ev.append(ev)
+                    if is_screen: screen_ev.append(ev)
+                    else: normal_ev.append(ev)
                 else:
                     screen_ev.append(ev)
                     normal_ev.append(ev)
@@ -839,12 +852,17 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, us
                 screen_ev.append(ev)
                 normal_ev.append(ev)
                 
-        # 写入画面字文件
-        with open(os.path.join(out_scr_dir, file), 'w', encoding='utf-8') as f:
-            f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(screen_ev) + "\n")
-        # 写入对白字幕文件
-        with open(os.path.join(out_norm_dir, file), 'w', encoding='utf-8') as f:
-            f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(normal_ev) + "\n")
+        base_name = os.path.splitext(file)[0]
+        if to_srt:
+            with open(os.path.join(out_scr_dir, base_name + '.srt'), 'w', encoding='utf-8') as f:
+                f.write(convert_to_srt_blocks(screen_ev))
+            with open(os.path.join(out_norm_dir, base_name + '.srt'), 'w', encoding='utf-8') as f:
+                f.write(convert_to_srt_blocks(normal_ev))
+        else:
+            with open(os.path.join(out_scr_dir, file), 'w', encoding='utf-8') as f:
+                f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(screen_ev) + "\n")
+            with open(os.path.join(out_norm_dir, file), 'w', encoding='utf-8') as f:
+                f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(normal_ev) + "\n")
             
         processed_count += 1
     return processed_count
@@ -1048,12 +1066,13 @@ def run_ass_split():
     b_str = split_ass_bracket_var.get().strip()
     sel_effs = [lb_split_effs.get(i) for i in lb_split_effs.curselection()]
     sel_styles = [lb_split_styles.get(i) for i in lb_split_styles.curselection()]
+    to_srt = split_ass_to_srt_var.get() == 1  # 接收是否转 SRT
     
     if u2 and not sel_effs: return messagebox.showwarning("警告", "勾选了特效条件，但未在列表中选中任何特效！")
     if u3 and not sel_styles: return messagebox.showwarning("警告", "勾选了样式条件，但未在列表中选中任何样式！")
     
     try:
-        count = process_ass_split(i_d, o_s, o_n, u1, b_str, u2, sel_effs, u3, sel_styles)
+        count = process_ass_split(i_d, o_s, o_n, u1, b_str, u2, sel_effs, u3, sel_styles, to_srt)
         messagebox.showinfo("完成", f"拆分成功！\n共处理了 {count} 个 ASS 文件，已分别输出。")
     except Exception as e: messagebox.showerror("错误", f"拆分失败:\n{str(e)}")
 
@@ -2674,6 +2693,86 @@ cb_m7_ref_font = ttk.Combobox(f_m7_bot2, textvariable=e_m7_override_font, width=
 cb_m7_ref_font.pack(side=tk.LEFT, padx=5)
 update_m7_ui()
 
+# ------ 功能5 (对应底层的模式 5): 条件定位替换样式 ------
+etab_f8 = ttk.Frame(edit_nb, padding=10)
+edit_nb.add(etab_f8, text="条件定位替换样式")
+
+f8_cond_frame = ttk.LabelFrame(etab_f8, text="定位条件 (必须至少启用一个条件，全为正则匹配)", padding=10)
+f8_cond_frame.pack(fill=tk.X, pady=5)
+
+f8_use_cond1 = tk.IntVar(value=0)
+f8_cond1_col = tk.StringVar(value=ASS_COLS[9])
+f8_cond1_val = tk.StringVar()
+ttk.Checkbutton(f8_cond_frame, text="启用条件1 (列名):", variable=f8_use_cond1).grid(row=0, column=0, sticky="e", pady=5)
+ttk.Combobox(f8_cond_frame, textvariable=f8_cond1_col, values=ASS_COLS, width=15, state="readonly").grid(row=0, column=1, sticky="w", padx=5)
+ttk.Label(f8_cond_frame, text="包含/匹配(正则):").grid(row=0, column=2, sticky="e", padx=(10,5))
+ttk.Entry(f8_cond_frame, textvariable=f8_cond1_val, width=20).grid(row=0, column=3, sticky="w", padx=5)
+
+f8_use_cond2 = tk.IntVar(value=0)
+f8_cond2_col = tk.StringVar(value=ASS_COLS[8])
+f8_cond2_val = tk.StringVar()
+ttk.Checkbutton(f8_cond_frame, text="启用条件2 (列名):", variable=f8_use_cond2).grid(row=1, column=0, sticky="e", pady=5)
+ttk.Combobox(f8_cond_frame, textvariable=f8_cond2_col, values=ASS_COLS, width=15, state="readonly").grid(row=1, column=1, sticky="w", padx=5)
+ttk.Label(f8_cond_frame, text="包含/匹配(正则):").grid(row=1, column=2, sticky="e", padx=(10,5))
+ttk.Entry(f8_cond_frame, textvariable=f8_cond2_val, width=20).grid(row=1, column=3, sticky="w", padx=5)
+
+f8_bot = ttk.Frame(etab_f8)
+f8_bot.pack(fill=tk.BOTH, expand=True, pady=5)
+
+edit_m8_target_var = tk.StringVar(value="新选中样式")
+f8_b_top = ttk.Frame(f8_bot)
+f8_b_top.pack(fill=tk.X, pady=5)
+ttk.Label(f8_b_top, text="符合条件则赋予新样式名称:").pack(side=tk.LEFT, padx=(0,5))
+ttk.Entry(f8_b_top, textvariable=edit_m8_target_var, width=15).pack(side=tk.LEFT)
+
+edit_m8_mode = tk.IntVar(value=0)
+def update_m8_ui():
+    if edit_m8_mode.get() == 0:
+        f_m8_custom.pack(fill=tk.BOTH, expand=True); f_m8_ref.pack_forget()
+    else:
+        f_m8_custom.pack_forget(); f_m8_ref.pack(fill=tk.BOTH, expand=True)
+
+ttk.Radiobutton(f8_b_top, text="使用下方自定义样式赋予", variable=edit_m8_mode, value=0, command=update_m8_ui).pack(side=tk.LEFT, padx=(15, 5))
+ttk.Radiobutton(f8_b_top, text="从外部 ASS 偷取样式赋予", variable=edit_m8_mode, value=1, command=update_m8_ui).pack(side=tk.LEFT)
+
+f_m8_custom = ttk.Frame(f8_bot)
+e_m8_font, e_m8_size, e_m8_col, e_m8_ocol = tk.StringVar(value="SimHei"), tk.StringVar(value="60"), tk.StringVar(value="#FFFFFF"), tk.StringVar(value="#000000")
+e_m8_mv, e_m8_mlr, e_m8_outl = tk.StringVar(value="20"), tk.StringVar(value="20"), tk.StringVar(value="2")
+e_m8_align, e_m8_shad, e_m8_bold, e_m8_ita = tk.StringVar(value="2"), tk.StringVar(value="0"), tk.IntVar(value=0), tk.IntVar(value=0)
+e_m8_alpha, e_m8_outalpha = tk.StringVar(value="00"), tk.StringVar(value="00")
+cb_m8, c_btn_m8, oc_btn_m8 = build_style_tab(f_m8_custom, e_m8_font, e_m8_size, e_m8_col, e_m8_ocol, e_m8_mv, e_m8_mlr, e_m8_outl, e_m8_align, e_m8_shad, e_m8_bold, e_m8_ita, e_m8_alpha, e_m8_outalpha)
+
+e_m8_resx, e_m8_resy = tk.StringVar(value="1080"), tk.StringVar(value="1920")
+f_m8_res = ttk.Frame(f_m8_custom)
+f_m8_res.grid(row=3, column=0, columnspan=8, sticky="w", pady=(5, 0))
+ttk.Label(f_m8_res, text="视频分辨率 (宽/X):").pack(side=tk.LEFT)
+ttk.Entry(f_m8_res, textvariable=e_m8_resx, width=8).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_m8_res, text="(高/Y):").pack(side=tk.LEFT)
+ttk.Entry(f_m8_res, textvariable=e_m8_resy, width=8).pack(side=tk.LEFT, padx=5)
+
+m8_preset_var = tk.StringVar()
+if current_presets_ass: m8_preset_var.set(list(current_presets_ass.keys())[0])
+f_m8_ps = create_ass_preset_bar(f_m8_custom, [e_m8_font, e_m8_size, e_m8_col, e_m8_ocol, e_m8_mv, e_m8_mlr, e_m8_outl, e_m8_align, e_m8_shad, e_m8_bold, e_m8_ita, e_m8_alpha, e_m8_outalpha], None, [c_btn_m8, oc_btn_m8], m8_preset_var, [e_m8_resx, e_m8_resy])
+f_m8_ps.grid(row=4, column=0, columnspan=8, sticky="w", pady=5)
+
+f_m8_ref = ttk.Frame(f8_bot)
+m8_ref_path, m8_ref_style = tk.StringVar(), tk.StringVar()
+f_m8_top = ttk.Frame(f_m8_ref); f_m8_top.pack(anchor="w", pady=5)
+ttk.Label(f_m8_top, text="外部 ASS:").pack(side=tk.LEFT)
+ttk.Entry(f_m8_top, textvariable=m8_ref_path, width=30).pack(side=tk.LEFT, padx=5)
+ttk.Button(f_m8_top, text="浏览...", command=lambda: ask_file(m8_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
+m8_ref_cb = ttk.Combobox(f_m8_top, textvariable=m8_ref_style, width=15)
+ttk.Button(f_m8_top, text="扫描样式 ->", command=lambda: scan_ref_for_cb(m8_ref_path.get(), m8_ref_cb, m8_ref_style)).pack(side=tk.LEFT, padx=5)
+m8_ref_cb.pack(side=tk.LEFT, padx=5)
+
+e_m8_font_mode, e_m8_override_font = tk.IntVar(value=0), tk.StringVar(value="SimHei")
+f_m8_bot2 = ttk.Frame(f_m8_ref); f_m8_bot2.pack(anchor="w", pady=5)
+ttk.Radiobutton(f_m8_bot2, text="保留参考样式原字体", variable=e_m8_font_mode, value=0).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f_m8_bot2, text="覆盖字体为:", variable=e_m8_font_mode, value=1).pack(side=tk.LEFT, padx=5)
+cb_m8_ref_font = ttk.Combobox(f_m8_bot2, textvariable=e_m8_override_font, width=25)
+cb_m8_ref_font.pack(side=tk.LEFT, padx=5)
+update_m8_ui()
+
 def execute_ass_editor(stage_only=False):
     i_dir, o_dir = edit_in_var.get().strip(), edit_out_var.get().strip()
     if not i_dir or (not stage_only and not o_dir): return messagebox.showwarning("警告", "请填好输入和输出目录！")
@@ -2712,6 +2811,11 @@ def execute_ass_editor(stage_only=False):
         else:
             if e_m7_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m7_resx.get().strip()}"
             if e_m7_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m7_resy.get().strip()}"
+    elif mode == 5:
+        if edit_m8_mode.get() == 1: rp = m8_ref_path.get().strip()
+        else:
+            if e_m8_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m8_resx.get().strip()}"
+            if e_m8_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m8_resy.get().strip()}"
     
     if rp and os.path.exists(rp):
         with open(rp, 'r', encoding='utf-8-sig') as f:
@@ -3002,6 +3106,57 @@ def execute_ass_editor(stage_only=False):
                 else: new_ev.append(ev)
             ev_lines = new_ev
 
+        # ====== 功能5: 条件定位替换样式 ======
+        elif mode == 5:
+            if f8_use_cond1.get() == 0 and f8_use_cond2.get() == 0:
+                return messagebox.showwarning("警告", "请至少启用一个定位条件！")
+
+            c1_idx = int(f8_cond1_col.get().split(':')[0])
+            c1_val = f8_cond1_val.get().strip()
+            c2_idx = int(f8_cond2_col.get().split(':')[0])
+            c2_val = f8_cond2_val.get().strip()
+            
+            new_style_name = edit_m8_target_var.get().strip()
+            if not new_style_name: return messagebox.showwarning("警告", "请输入赋予的新样式名称！")
+            
+            new_line = ""
+            if edit_m8_mode.get() == 0:
+                new_line = build_ass_style_line(new_style_name, e_m8_font.get(), e_m8_size.get(), e_m8_col.get(), e_m8_ocol.get(), e_m8_mv.get(), e_m8_mlr.get(), e_m8_outl.get(), e_m8_align.get(), e_m8_shad.get(), e_m8_bold.get(), e_m8_ita.get(), e_m8_alpha.get(), e_m8_outalpha.get())
+            else:
+                rp, rs = m8_ref_path.get(), m8_ref_style.get()
+                if not os.path.exists(rp) or not rs: return messagebox.showwarning("警告", "请正确提供参考文件和样式！")
+                ref_dict = scan_all_styles_from_ass(rp)
+                if rs not in ref_dict: return messagebox.showwarning("错误", "参考中没找到该样式")
+                new_line = rename_style_line(ref_dict[rs], new_style_name)
+                if e_m8_font_mode.get() == 1: new_line = replace_font_in_style(new_line, e_m8_override_font.get())
+                
+            matched_any = False
+            new_ev = []
+            for ev in ev_lines:
+                if ev.startswith('Dialogue:'):
+                    p = ev.split(',', 9)
+                    if len(p) >= 10:
+                        is_match = True
+                        if f8_use_cond1.get() == 1:
+                            if not re.search(c1_val, p[c1_idx]): is_match = False
+                        if f8_use_cond2.get() == 1 and is_match:
+                            if not re.search(c2_val, p[c2_idx]): is_match = False
+                            
+                        if is_match:
+                            p[3] = new_style_name
+                            matched_any = True
+                        new_ev.append(",".join(p))
+                    else: new_ev.append(ev)
+                else: new_ev.append(ev)
+            ev_lines = new_ev
+
+            if matched_any:
+                rep = False
+                for i, sl in enumerate(s_lines):
+                    if sl.startswith('Style:') and sl.split('Style:')[1].split(',')[0].strip() == new_style_name:
+                        s_lines[i] = new_line; rep = True
+                if not rep: s_lines.append(new_line)
+
         final_content = "\n".join(h_lines) + "\n\n" + "\n".join(s_lines) + "\n\n" + "\n".join(ev_lines)
         
         # --- 根据按钮模式，分流输出目标 ---
@@ -3134,7 +3289,11 @@ sb_split_styles = ttk.Scrollbar(f_sc3_lb, command=lb_split_styles.yview)
 sb_split_styles.pack(side=tk.LEFT, fill=tk.Y)
 lb_split_styles.config(yscrollcommand=sb_split_styles.set)
 
-ttk.Button(tab_ass_split, text="▶ 开始拆分 ASS", command=run_ass_split, style='TButton').grid(row=4, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+# 新增：保存为 SRT 的勾选选项
+split_ass_to_srt_var = tk.IntVar(value=0)
+ttk.Checkbutton(tab_ass_split, text="拆分后自动剥离特效与样式，直接转为标准 SRT 格式保存", variable=split_ass_to_srt_var).grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 0))
+
+ttk.Button(tab_ass_split, text="▶ 开始拆分 ASS", command=run_ass_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 
 # ================= TAB 11: ASS 样式预设提取 =================
 tab_ext = ttk.Frame(nb_ass, padding=20)
@@ -3244,9 +3403,13 @@ try:
     
     cb_m7['values'] = fonts
     cb_m7_ref_font['values'] = fonts
+    
+    cb_m8['values'] = fonts
+    cb_m8_ref_font['values'] = fonts
 except: pass
 
-update_m0_ui() # 更新此处
+update_m0_ui()
+update_m8_ui()
 update_m2_ui()
 update_ass_style_mode_5()
 update_ms_style_mode_9()
