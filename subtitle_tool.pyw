@@ -1878,6 +1878,13 @@ nb_ass.add(tab_edit, text=" SRT/ASS编辑器 ")
 tab_edit.columnconfigure(1, weight=1)
 
 edit_in_var, edit_out_var = tk.StringVar(), tk.StringVar()
+
+# ====== 核心修复：当输入文件夹发生改变时，自动清空旧的内存暂存 ======
+def clear_memory_on_dir_change(*args):
+    global_ass_memory_cache.clear()
+edit_in_var.trace_add("write", clear_memory_on_dir_change)
+# ==============================================================
+
 ttk.Label(tab_edit, text="字幕输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
 ttk.Entry(tab_edit, textvariable=edit_in_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 ttk.Button(tab_edit, text="浏览...", command=lambda: ask_dir(edit_in_var, "选择目录")).grid(row=0, column=2, padx=(5,0), pady=5)
