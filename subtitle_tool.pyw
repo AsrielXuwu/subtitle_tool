@@ -1330,7 +1330,7 @@ def ask_save_file(var, title, filetypes, defaultextension): var.set(filedialog.a
 
 root = tk.Tk()
 root.title("字幕拆分与合并工具箱")
-root.geometry("770x680")
+root.geometry("770x670")
 root.minsize(500, 500)
 
 # 跨平台主题与字体自适应
@@ -1976,7 +1976,7 @@ update_ass_style_mode_5()
 
 # ================= TAB 9: SRT 分类合并转 ASS =================
 tab_ms = ttk.Frame(nb_ass, padding=10)
-nb_ass.add(tab_ms, text=" SRT分类合并转ASS ")
+nb_ass.add(tab_ms, text=" SRT合并/转ASS ")
 tab_ms.columnconfigure(1, weight=1)
 
 ms_norm_var, ms_scr_var, ms_out_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
@@ -2172,6 +2172,52 @@ edit_nb = ttk.Notebook(tab_edit)
 # 修改：将 sticky="ew" 改为 sticky="nsew" (North-South-East-West)，允许上下左右全方位拉伸
 edit_nb.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=10, padx=5)
 # ==============================================================
+
+# ====== 新增：全局复用的滚动标签页构造器 ======
+def create_scrollable_tab(notebook, text, padding=10):
+    outer_frame = ttk.Frame(notebook)
+    notebook.add(outer_frame, text=text)
+
+    canvas = tk.Canvas(outer_frame, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=canvas.yview)
+    inner_frame = ttk.Frame(canvas, padding=padding)
+
+    # 动态更新滚动区域
+    inner_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    
+    # 强制内部 Frame 宽度自动拉伸，匹配 Canvas 宽度（保证 sticky="ew" 生效）
+    def on_canvas_configure(event):
+        canvas.itemconfig(canvas_window, width=event.width)
+    canvas.bind("<Configure>", on_canvas_configure)
+
+    canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    
+    # 跨平台鼠标滚轮事件绑定 (仅当鼠标进入该区域时生效，防止干扰其他组件)
+    def _on_mousewheel(event):
+        if event.num == 4 or getattr(event, 'delta', 0) > 0:
+            canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or getattr(event, 'delta', 0) < 0:
+            canvas.yview_scroll(1, "units")
+            
+    def _bind_mouse(event):
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel) # Linux 支持
+        canvas.bind_all("<Button-5>", _on_mousewheel) # Linux 支持
+        
+    def _unbind_mouse(event):
+        canvas.unbind_all("<MouseWheel>")
+        canvas.unbind_all("<Button-4>")
+        canvas.unbind_all("<Button-5>")
+        
+    canvas.bind("<Enter>", _bind_mouse)
+    canvas.bind("<Leave>", _unbind_mouse)
+
+    return inner_frame
+# ==========================================================
 
 # ====== 新增：全局复用高级判定条件 UI 构造器与求值器 ======
 def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件"):
@@ -2433,10 +2479,8 @@ update_m0_ui()
 
 # === 注意：确保完全删除了 原功能4（etab_eff） 区块的所有代码 ===
 
-# ------ 功能2: 根据字符/特效/样式重划定 ------
 # ------ 功能2: 根据字符重新分配 ------
-etab_tag = ttk.Frame(edit_nb, padding=10)
-edit_nb.add(etab_tag, text="根据[]重划定对白/画面字")
+etab_tag = create_scrollable_tab(edit_nb, "根据[]重划定对白/画面字")
 etab_tag.columnconfigure(1, weight=1)
 
 f_m2_cond, m2_logic_var, m2_c1_var, edit_m2_bracket, m2_c2_var, lb_m2_effs, m2_c3_var, lb_m2_styles = build_advanced_condition_ui(etab_tag, edit_in_var, "重划定判定条件 (都不勾选则默认全部划为普通对白)")
@@ -3091,8 +3135,7 @@ cb_m7_ref_font.pack(side=tk.LEFT, padx=5)
 update_m7_ui()
 
 # ------ 功能5 (对应底层的模式 5): 条件定位替换样式 ------
-etab_f8 = ttk.Frame(edit_nb, padding=10)
-edit_nb.add(etab_f8, text="条件定位替换样式")
+etab_f8 = create_scrollable_tab(edit_nb, "条件定位替换样式")
 
 f_f8_cond, f8_logic_var, f8_c1_var, f8_bracket_var, f8_c2_var, lb_f8_effs, f8_c3_var, lb_f8_styles = build_advanced_condition_ui(etab_f8, edit_in_var, "定位条件 (必须至少启用一个条件，都不勾选则不执行)")
 f_f8_cond.pack(fill=tk.X, pady=5)
@@ -3635,7 +3678,7 @@ ttk.Button(tab_eff, text="执行指定列批量复制", command=run_column_copy,
 
 # ================= TAB 10: ASS 拆分 (画面字/普通字) =================
 tab_ass_split = ttk.Frame(nb_ass, padding=10)
-nb_ass.add(tab_ass_split, text=" ASS拆分 ")
+nb_ass.add(tab_ass_split, text=" ASS拆分/转SRT ")
 tab_ass_split.columnconfigure(1, weight=1)
 
 split_ass_in_var = tk.StringVar()
