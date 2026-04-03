@@ -976,7 +976,7 @@ def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict
             
     return len(all_files)
 
-def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, to_srt=False):
+def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, to_srt=False):
     """根据组合条件将 ASS 拆分为画面字和普通字两个文件"""
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
     if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
@@ -1035,13 +1035,12 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, us
                     txt = parts[9]
                     c_txt = re.sub(r'\{.*?\}', '', txt).strip()
                     
-                    is_screen = True
-                    if use_c1:
-                        if not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): is_screen = False
-                    if use_c2:
-                        if effect not in sel_effs: is_screen = False
-                    if use_c3:
-                        if style not in sel_styles: is_screen = False
+                    style = parts[3].strip()
+                    effect = parts[8].strip()
+                    txt = parts[9]
+                    
+                    # 接入全局高级判定求值器
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
                             
                     if is_screen: screen_ev.append(ev)
                     else: normal_ev.append(ev)
@@ -1066,7 +1065,6 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, use_c1, bracket_str, us
             
         processed_count += 1
     return processed_count
-
 # ================= UI 交互回调 =================
 
 def run_ass_merge():
@@ -1163,7 +1161,8 @@ def run_ass_convert():
     if not srt_dir or not out_dir: return messagebox.showwarning("警告", "请完整选择仅限 SRT 输入文件夹和 ASS 输出文件夹！")
     
     bracket = ass_bracket_var.get().strip()
-    regex_text = ass_regex_text.get("1.0", tk.END)
+    # 修改点：如果开关没打开，就强制将 regex_text 置为空字符串，底层就不会执行替换了
+    regex_text = ass_regex_text.get("1.0", tk.END) if ass_enable_regex_var.get() == 1 else ""
     do_merge = ass_merge_var.get() == 1
     merge_report_path = ass_merge_report_var.get().strip()
     if do_merge and not merge_report_path: return messagebox.showwarning("警告", "勾选了合并功能，请指定合并报告的保存路径！")
@@ -1258,30 +1257,6 @@ def run_merge_srt_to_ass():
         messagebox.showinfo("完成", f"合并转换完成！\n成功将 {count} 个双源 SRT 合并为了 ASS。")
     except Exception as e: messagebox.showerror("错误", f"处理失败:\n{str(e)}")
 
-def scan_ass_split_features():
-    d = split_ass_in_var.get().strip()
-    if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先选择输入文件夹！")
-    ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
-    if not ass_files: return messagebox.showwarning("提示", "输入文件夹中未找到 .ass 文件！")
-    
-    effs, styles = set(), set()
-    for filepath in ass_files:
-        with open(filepath, 'r', encoding='utf-8-sig') as f:
-            for line in f:
-                if line.startswith('Dialogue:'):
-                    p = line.split(',', 9)
-                    if len(p) >= 10:
-                        styles.add(p[3].strip())
-                        effs.add(p[8].strip())
-                        
-    lb_split_effs.delete(0, tk.END)
-    for e in sorted(list(effs)): lb_split_effs.insert(tk.END, e)
-    
-    lb_split_styles.delete(0, tk.END)
-    for s in sorted(list(styles)): lb_split_styles.insert(tk.END, s)
-    
-    messagebox.showinfo("成功", f"扫描完毕！\n共发现 {len(effs)} 种特效说明，{len(styles)} 种样式。")
-
 def run_ass_split():
     i_d = split_ass_in_var.get().strip()
     o_s = split_ass_out_scr_var.get().strip()
@@ -1289,19 +1264,19 @@ def run_ass_split():
     
     if not i_d or not o_s or not o_n: return messagebox.showwarning("警告", "请完整选择输入和两个输出文件夹！")
         
-    u1, u2, u3 = split_ass_c1_var.get(), split_ass_c2_var.get(), split_ass_c3_var.get()
-    if not (u1 or u2 or u3): return messagebox.showwarning("警告", "请至少勾选一个拆分条件！")
-        
+    logic_mode = split_ass_logic_var.get()
+    u1, u2, u3 = split_ass_c1_var.get() == 1, split_ass_c2_var.get() == 1, split_ass_c3_var.get() == 1
     b_str = split_ass_bracket_var.get().strip()
     sel_effs = [lb_split_effs.get(i) for i in lb_split_effs.curselection()]
     sel_styles = [lb_split_styles.get(i) for i in lb_split_styles.curselection()]
-    to_srt = split_ass_to_srt_var.get() == 1  # 接收是否转 SRT
+    to_srt = split_ass_to_srt_var.get() == 1
     
+    if not (u1 or u2 or u3): return messagebox.showwarning("警告", "请至少勾选一个拆分条件！")
     if u2 and not sel_effs: return messagebox.showwarning("警告", "勾选了特效条件，但未在列表中选中任何特效！")
     if u3 and not sel_styles: return messagebox.showwarning("警告", "勾选了样式条件，但未在列表中选中任何样式！")
     
     try:
-        count = process_ass_split(i_d, o_s, o_n, u1, b_str, u2, sel_effs, u3, sel_styles, to_srt)
+        count = process_ass_split(i_d, o_s, o_n, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, to_srt)
         messagebox.showinfo("完成", f"拆分成功！\n共处理了 {count} 个 ASS 文件，已分别输出。")
     except Exception as e: messagebox.showerror("错误", f"拆分失败:\n{str(e)}")
 
@@ -1879,7 +1854,11 @@ ttk.Label(f_ass_txt, text="画面字识别符号 (一对):").grid(row=0, column=
 ttk.Entry(f_ass_txt, textvariable=ass_bracket_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Label(f_ass_txt, text="例如: 【】 或 []", font=("Arial", 8)).grid(row=0, column=2, sticky="w", padx=5)
 
-ttk.Label(f_ass_txt, text="正则批量替换:").grid(row=1, column=0, sticky="ne", padx=(0,5), pady=5)
+# 新增：正则替换功能的开关变量（默认设为 0，即关闭状态）
+ass_enable_regex_var = tk.IntVar(value=0)
+# 把原来的 Label 替换成带有绑定变量的 Checkbutton
+ttk.Checkbutton(f_ass_txt, text="开启正则批量替换:", variable=ass_enable_regex_var).grid(row=1, column=0, sticky="ne", padx=(0,5), pady=5)
+
 ass_regex_text = tk.Text(f_ass_txt, height=3, width=50, font=('Arial', 9))
 ass_regex_text.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 ass_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n例如将【】替换为[]，输入【(.*?)】 >>> [$1]")
@@ -2171,12 +2150,20 @@ edit_in_var.trace_add("write", clear_memory_on_dir_change)
 
 ttk.Label(tab_edit, text="字幕输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
 ttk.Entry(tab_edit, textvariable=edit_in_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
-ttk.Button(tab_edit, text="浏览...", command=lambda: ask_dir(edit_in_var, "选择目录")).grid(row=0, column=2, padx=(5,0), pady=5)
+# === 第 0 行：输入文件夹的浏览按钮 + 暂存按钮 ===
+f_edit_in_btns = ttk.Frame(tab_edit)
+f_edit_in_btns.grid(row=0, column=2, sticky="w", padx=(5,0), pady=5)
+ttk.Button(f_edit_in_btns, text="浏览...", command=lambda: ask_dir(edit_in_var, "选择目录")).pack(side=tk.LEFT)
+ttk.Button(f_edit_in_btns, text="💾 暂存到内存", command=lambda: execute_ass_editor(stage_only=True)).pack(side=tk.LEFT, padx=(10, 0))
 
 ttk.Label(tab_edit, text="修改后字幕输出:").grid(row=1, column=0, sticky="e", padx=(0,5), pady=5)
 ttk.Entry(tab_edit, textvariable=edit_out_var).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
-ttk.Button(tab_edit, text="浏览...", command=lambda: ask_dir(edit_out_var, "选择目录")).grid(row=1, column=2, padx=(5,0), pady=5)
 
+# === 第 1 行：输出文件夹的浏览按钮 + 执行按钮 ===
+f_edit_out_btns = ttk.Frame(tab_edit)
+f_edit_out_btns.grid(row=1, column=2, sticky="w", padx=(5,0), pady=5)
+ttk.Button(f_edit_out_btns, text="浏览...", command=lambda: ask_dir(edit_out_var, "选择目录")).pack(side=tk.LEFT)
+ttk.Button(f_edit_out_btns, text="▶ 批处理输出", command=lambda: execute_ass_editor(stage_only=False)).pack(side=tk.LEFT, padx=(10, 0))
 # ================= 修复：赋予子面板垂直拉伸能力 =================
 # 新增：告诉底层 grid 系统，把多余或缩小的垂直空间全都分配给 row=2（即子面板所在行）
 tab_edit.rowconfigure(2, weight=1) 
@@ -2185,6 +2172,114 @@ edit_nb = ttk.Notebook(tab_edit)
 # 修改：将 sticky="ew" 改为 sticky="nsew" (North-South-East-West)，允许上下左右全方位拉伸
 edit_nb.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=10, padx=5)
 # ==============================================================
+
+# ====== 新增：全局复用高级判定条件 UI 构造器与求值器 ======
+def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件"):
+    f_cond = ttk.LabelFrame(parent_widget, text=title, padding=10)
+    
+    logic_var = tk.IntVar(value=0)
+    f_logic = ttk.Frame(f_cond)
+    f_logic.pack(fill=tk.X, pady=(0, 5))
+    ttk.Label(f_logic, text="多条件组合逻辑:").pack(side=tk.LEFT)
+    ttk.Radiobutton(f_logic, text="【与】模式 (选中条件必须同时满足才执行)", variable=logic_var, value=0).pack(side=tk.LEFT, padx=(5, 10))
+    ttk.Radiobutton(f_logic, text="【或】模式 (选中条件只需满足任意一项即执行)", variable=logic_var, value=1).pack(side=tk.LEFT)
+
+    c1_var = tk.IntVar(value=0)
+    bracket_var = tk.StringVar(value="【】")
+    f_c1 = ttk.Frame(f_cond)
+    f_c1.pack(fill=tk.X, pady=2)
+    ttk.Checkbutton(f_c1, text="条件1: 文本前后包含指定符号组合:", variable=c1_var).pack(side=tk.LEFT)
+    ttk.Entry(f_c1, textvariable=bracket_var, width=10).pack(side=tk.LEFT, padx=5)
+    ttk.Label(f_c1, text="(必须包裹整条字幕首尾)", foreground="gray").pack(side=tk.LEFT)
+    
+    def scan_features():
+        # 2. 将原本写死的 edit_in_var 改为使用传入的 in_dir_var
+        d = in_dir_var.get().strip()
+        if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在上方输入文件夹中选择目录！")
+        ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
+        if not ass_files: return messagebox.showwarning("提示", "输入文件夹中未找到 .ass 文件！")
+        
+        effs, styles = set(), set()
+        for filepath in ass_files:
+            file_name = os.path.basename(filepath)
+            if file_name in global_ass_memory_cache:
+                lines = global_ass_memory_cache[file_name].split('\n')
+            else:
+                try:
+                    with open(filepath, 'r', encoding='utf-8-sig') as f: lines = f.read().split('\n')
+                except: continue
+                
+            for line in lines:
+                if line.startswith('Dialogue:'):
+                    p = line.split(',', 9)
+                    if len(p) >= 10:
+                        styles.add(p[3].strip())
+                        effs.add(p[8].strip())
+                        
+        lb_effs.delete(0, tk.END)
+        for e in sorted(list(effs)): lb_effs.insert(tk.END, e)
+        
+        lb_styles.delete(0, tk.END)
+        for s in sorted(list(styles)): lb_styles.insert(tk.END, s)
+        
+        messagebox.showinfo("成功", f"扫描完毕！\n共发现 {len(effs)} 种特效说明，{len(styles)} 种样式。")
+
+    ttk.Button(f_c1, text="🔍 扫描输入文件夹的特效与样式", command=scan_features).pack(side=tk.RIGHT, padx=5)
+
+    c2_var = tk.IntVar(value=0)
+    f_c2 = ttk.Frame(f_cond)
+    f_c2.pack(fill=tk.X, pady=2)
+    ttk.Checkbutton(f_c2, text="条件2: 包含在以下选中的【特效说明 Effect】内 (支持按住 Ctrl 多选):", variable=c2_var).pack(anchor="w")
+    f_c2_lb = ttk.Frame(f_c2)
+    f_c2_lb.pack(fill=tk.X, padx=20, pady=2)
+    lb_effs = tk.Listbox(f_c2_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
+    lb_effs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb_effs = ttk.Scrollbar(f_c2_lb, command=lb_effs.yview)
+    sb_effs.pack(side=tk.LEFT, fill=tk.Y)
+    lb_effs.config(yscrollcommand=sb_effs.set)
+
+    c3_var = tk.IntVar(value=0)
+    f_c3 = ttk.Frame(f_cond)
+    f_c3.pack(fill=tk.X, pady=2)
+    ttk.Checkbutton(f_c3, text="条件3: 包含在以下选中的【样式名称 Style】内 (支持按住 Ctrl 多选):", variable=c3_var).pack(anchor="w")
+    f_c3_lb = ttk.Frame(f_c3)
+    f_c3_lb.pack(fill=tk.X, padx=20, pady=2)
+    lb_styles = tk.Listbox(f_c3_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
+    lb_styles.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb_styles = ttk.Scrollbar(f_c3_lb, command=lb_styles.yview)
+    sb_styles.pack(side=tk.LEFT, fill=tk.Y)
+    lb_styles.config(yscrollcommand=sb_styles.set)
+
+    return f_cond, logic_var, c1_var, bracket_var, c2_var, lb_effs, c3_var, lb_styles
+
+def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles):
+    # 如果三个条件都没勾选，视为无条件全部匹配（执行全量操作）
+    if not use_c1 and not use_c2 and not use_c3: return True
+        
+    if fmt == "ASS":
+        txt = p[9]
+        effect = p[8].strip()
+        style = p[3].strip()
+    else: # SRT
+        txt = p[2]
+        effect = ""
+        style = ""
+        use_c2 = False # SRT强制忽略特效
+        use_c3 = False # SRT强制忽略样式
+        
+    c_txt = re.sub(r'\{.*?\}', '', txt).strip()
+    
+    if logic_mode == 0: # AND
+        if use_c1 and not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return False
+        if use_c2 and effect not in sel_effs: return False
+        if use_c3 and style not in sel_styles: return False
+        return True
+    else: # OR
+        if use_c1 and (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return True
+        if use_c2 and effect in sel_effs: return True
+        if use_c3 and style in sel_styles: return True
+        return False
+# ==========================================================
 
 ASS_COLS = ["0: Layer", "1: Start", "2: End", "3: Style", "4: Name", "5: MarginL", "6: MarginR", "7: MarginV", "8: Effect", "9: Text"]
 SRT_COLS = ["0: ID", "1: Timeline", "2: Text"]
@@ -2199,6 +2294,38 @@ f_m0_top.grid(row=0, column=0, columnspan=3, sticky="ew", pady=5)
 ttk.Label(f_m0_top, text="选择要扫描检索的列:").pack(side=tk.LEFT)
 m0_col_var = tk.StringVar(value=ASS_COLS[3]) # 默认选择 Style 列
 ttk.Combobox(f_m0_top, textvariable=m0_col_var, values=ASS_COLS, state="readonly", width=12).pack(side=tk.LEFT, padx=5)
+
+def scan_m2_features():
+    d = edit_in_var.get().strip()
+    if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在上方【字幕输入文件夹】中选择目录！")
+    ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
+    if not ass_files: return messagebox.showwarning("提示", "输入文件夹中未找到 .ass 文件！")
+    
+    effs, styles = set(), set()
+    for filepath in ass_files:
+        file_name = os.path.basename(filepath)
+        # 优先读取内存暂存，保证流式处理最新数据
+        if file_name in global_ass_memory_cache:
+            lines = global_ass_memory_cache[file_name].split('\n')
+        else:
+            try:
+                with open(filepath, 'r', encoding='utf-8-sig') as f: lines = f.read().split('\n')
+            except: continue
+            
+        for line in lines:
+            if line.startswith('Dialogue:'):
+                p = line.split(',', 9)
+                if len(p) >= 10:
+                    styles.add(p[3].strip())
+                    effs.add(p[8].strip())
+                    
+    lb_m2_effs.delete(0, tk.END)
+    for e in sorted(list(effs)): lb_m2_effs.insert(tk.END, e)
+    
+    lb_m2_styles.delete(0, tk.END)
+    for s in sorted(list(styles)): lb_m2_styles.insert(tk.END, s)
+    
+    messagebox.showinfo("成功", f"扫描完毕！\n共发现 {len(effs)} 种特效说明，{len(styles)} 种样式。")
 
 def scan_m0_cols():
     d = edit_in_var.get().strip()
@@ -2306,25 +2433,30 @@ update_m0_ui()
 
 # === 注意：确保完全删除了 原功能4（etab_eff） 区块的所有代码 ===
 
+# ------ 功能2: 根据字符/特效/样式重划定 ------
 # ------ 功能2: 根据字符重新分配 ------
-etab_tag = ttk.Frame(edit_nb, padding=10); edit_nb.add(etab_tag, text="根据[]重划定对白/画面字")
+etab_tag = ttk.Frame(edit_nb, padding=10)
+edit_nb.add(etab_tag, text="根据[]重划定对白/画面字")
 etab_tag.columnconfigure(1, weight=1)
-edit_m2_bracket = tk.StringVar(value="【】")
-ttk.Label(etab_tag, text="画面字包裹符 (一对):").grid(row=0, column=0, sticky="e", pady=5)
-ttk.Entry(etab_tag, textvariable=edit_m2_bracket, width=10).grid(row=0, column=1, sticky="w", padx=5)
-ttk.Label(etab_tag, text="(如果整句话被该符号包裹，则判定为画面字，反之则为对白字幕)", font=("Arial", 8)).grid(row=0, column=1, columnspan=2, sticky="e")
+
+f_m2_cond, m2_logic_var, m2_c1_var, edit_m2_bracket, m2_c2_var, lb_m2_effs, m2_c3_var, lb_m2_styles = build_advanced_condition_ui(etab_tag, edit_in_var, "重划定判定条件 (都不勾选则默认全部划为普通对白)")
+f_m2_cond.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+m2_c1_var.set(1) # 默认勾选条件1
 
 edit_m2_mode = tk.IntVar(value=0)
 f_m2_container = ttk.Frame(etab_tag)  
 
 def update_m2_ui():
     if edit_m2_mode.get() == 0:
-        f_m2_container.grid(row=2, column=0, columnspan=3, sticky="ew"); f_m2_ref.grid_remove()
+        f_m2_container.grid(row=2, column=0, columnspan=3, sticky="ew")
+        f_m2_ref.grid_remove()
     else:
-        f_m2_container.grid_remove(); f_m2_ref.grid(row=2, column=0, columnspan=3, sticky="w")
+        f_m2_container.grid_remove()
+        f_m2_ref.grid(row=2, column=0, columnspan=3, sticky="w")
 
-ttk.Radiobutton(etab_tag, text="重新划分后，使用下方自定义样式赋予", variable=edit_m2_mode, value=0, command=update_m2_ui).grid(row=1, column=0, columnspan=2, sticky="w", pady=10)
-ttk.Radiobutton(etab_tag, text="重新划分后，从外部 ASS 偷取样式赋予", variable=edit_m2_mode, value=1, command=update_m2_ui).grid(row=1, column=1, columnspan=2, sticky="w", pady=10)
+# 【已撤销上个版本的居右 Frame 方案，改回原始 grid 左右并列方案】
+ttk.Radiobutton(etab_tag, text="重新划分后，使用下方自定义样式赋予", variable=edit_m2_mode, value=0, command=update_m2_ui).grid(row=1, column=0, sticky="w", pady=(10, 5))
+ttk.Radiobutton(etab_tag, text="重新划分后，从外部 ASS 偷取样式赋予", variable=edit_m2_mode, value=1, command=update_m2_ui).grid(row=1, column=1, sticky="w", pady=(10, 5))
 
 f_m2_custom = ttk.Notebook(f_m2_container)
 f_m2_custom.pack(fill=tk.BOTH, expand=True)
@@ -2435,17 +2567,9 @@ def update_f4_cols():
     if f4_format_var.get() == "ASS":
         cb_f4_tgt['values'] = ASS_COLS
         f4_target_col.set(ASS_COLS[9])
-        cb_f4_c1['values'] = ASS_COLS
-        f4_cond1_col.set(ASS_COLS[8])
-        cb_f4_c2['values'] = ASS_COLS
-        f4_cond2_col.set(ASS_COLS[3])
     else:
         cb_f4_tgt['values'] = SRT_COLS
         f4_target_col.set(SRT_COLS[2])
-        cb_f4_c1['values'] = SRT_COLS
-        f4_cond1_col.set(SRT_COLS[0])
-        cb_f4_c2['values'] = SRT_COLS
-        f4_cond2_col.set(SRT_COLS[1])
 
 f4_top = ttk.Frame(etab_f4)
 f4_top.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
@@ -2462,26 +2586,8 @@ f4_regex_text = tk.Text(etab_f4, height=3, width=45, font=('Arial', 9))
 f4_regex_text.grid(row=2, column=1, columnspan=3, sticky="w", padx=5, pady=5)
 f4_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n【(.*?)】 >>> [$1]")
 
-f4_cond_frame = ttk.LabelFrame(etab_f4, text="可选过滤条件 (都不勾选则为针对目标列的全量批量替换)", padding=10)
-f4_cond_frame.grid(row=3, column=0, columnspan=4, sticky="ew", pady=10, padx=5)
-
-f4_use_cond1 = tk.IntVar(value=0)
-f4_cond1_col = tk.StringVar(value=ASS_COLS[8])
-f4_cond1_val = tk.StringVar()
-ttk.Checkbutton(f4_cond_frame, text="启用条件1 (列名):", variable=f4_use_cond1).grid(row=0, column=0, sticky="e", pady=5)
-cb_f4_c1 = ttk.Combobox(f4_cond_frame, textvariable=f4_cond1_col, values=ASS_COLS, width=15, state="readonly")
-cb_f4_c1.grid(row=0, column=1, sticky="w", padx=5)
-ttk.Label(f4_cond_frame, text="包含/匹配(正则):").grid(row=0, column=2, sticky="e", padx=(10,5))
-ttk.Entry(f4_cond_frame, textvariable=f4_cond1_val, width=20).grid(row=0, column=3, sticky="w", padx=5)
-
-f4_use_cond2 = tk.IntVar(value=0)
-f4_cond2_col = tk.StringVar(value=ASS_COLS[3])
-f4_cond2_val = tk.StringVar()
-ttk.Checkbutton(f4_cond_frame, text="启用条件2 (列名):", variable=f4_use_cond2).grid(row=1, column=0, sticky="e", pady=5)
-cb_f4_c2 = ttk.Combobox(f4_cond_frame, textvariable=f4_cond2_col, values=ASS_COLS, width=15, state="readonly")
-cb_f4_c2.grid(row=1, column=1, sticky="w", padx=5)
-ttk.Label(f4_cond_frame, text="包含/匹配(正则):").grid(row=1, column=2, sticky="e", padx=(10,5))
-ttk.Entry(f4_cond_frame, textvariable=f4_cond2_val, width=20).grid(row=1, column=3, sticky="w", padx=5)
+f_f4_cond, f4_logic_var, f4_c1_var, f4_bracket_var, f4_c2_var, lb_f4_effs, f4_c3_var, lb_f4_styles = build_advanced_condition_ui(etab_f4, edit_in_var, "定位条件 (都不勾选则为针对目标列的全量批量替换)")
+f_f4_cond.grid(row=3, column=0, columnspan=4, sticky="ew", pady=10, padx=5)
 
 # ------ 功能7: 手动选中修改样式 ------
 etab_f7 = ttk.Frame(edit_nb, padding=5)
@@ -2988,24 +3094,8 @@ update_m7_ui()
 etab_f8 = ttk.Frame(edit_nb, padding=10)
 edit_nb.add(etab_f8, text="条件定位替换样式")
 
-f8_cond_frame = ttk.LabelFrame(etab_f8, text="定位条件 (必须至少启用一个条件，全为正则匹配)", padding=10)
-f8_cond_frame.pack(fill=tk.X, pady=5)
-
-f8_use_cond1 = tk.IntVar(value=0)
-f8_cond1_col = tk.StringVar(value=ASS_COLS[9])
-f8_cond1_val = tk.StringVar()
-ttk.Checkbutton(f8_cond_frame, text="启用条件1 (列名):", variable=f8_use_cond1).grid(row=0, column=0, sticky="e", pady=5)
-ttk.Combobox(f8_cond_frame, textvariable=f8_cond1_col, values=ASS_COLS, width=15, state="readonly").grid(row=0, column=1, sticky="w", padx=5)
-ttk.Label(f8_cond_frame, text="包含/匹配(正则):").grid(row=0, column=2, sticky="e", padx=(10,5))
-ttk.Entry(f8_cond_frame, textvariable=f8_cond1_val, width=20).grid(row=0, column=3, sticky="w", padx=5)
-
-f8_use_cond2 = tk.IntVar(value=0)
-f8_cond2_col = tk.StringVar(value=ASS_COLS[8])
-f8_cond2_val = tk.StringVar()
-ttk.Checkbutton(f8_cond_frame, text="启用条件2 (列名):", variable=f8_use_cond2).grid(row=1, column=0, sticky="e", pady=5)
-ttk.Combobox(f8_cond_frame, textvariable=f8_cond2_col, values=ASS_COLS, width=15, state="readonly").grid(row=1, column=1, sticky="w", padx=5)
-ttk.Label(f8_cond_frame, text="包含/匹配(正则):").grid(row=1, column=2, sticky="e", padx=(10,5))
-ttk.Entry(f8_cond_frame, textvariable=f8_cond2_val, width=20).grid(row=1, column=3, sticky="w", padx=5)
+f_f8_cond, f8_logic_var, f8_c1_var, f8_bracket_var, f8_c2_var, lb_f8_effs, f8_c3_var, lb_f8_styles = build_advanced_condition_ui(etab_f8, edit_in_var, "定位条件 (必须至少启用一个条件，都不勾选则不执行)")
+f_f8_cond.pack(fill=tk.X, pady=5)
 
 f8_bot = ttk.Frame(etab_f8)
 f8_bot.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -3093,10 +3183,12 @@ def execute_ass_editor(stage_only=False):
             if e_m0_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m0_resx.get().strip()}"
             if e_m0_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m0_resy.get().strip()}"
     elif mode == 1:
+        if m2_c2_var.get() == 1 and not lb_m2_effs.curselection():
+            return messagebox.showwarning("警告", "勾选了特效条件，但未在列表中选中任何特效！")
+        if m2_c3_var.get() == 1 and not lb_m2_styles.curselection():
+            return messagebox.showwarning("警告", "勾选了样式条件，但未在列表中选中任何样式！")
+            
         if edit_m2_mode.get() == 1: rp = m2_ref_path.get().strip()
-        else:
-            if e_m2_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m2_resx.get().strip()}"
-            if e_m2_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m2_resy.get().strip()}"
     elif mode == 4:
         if edit_m7_mode.get() == 1: rp = m7_ref_path.get().strip()
         else:
@@ -3144,26 +3236,25 @@ def execute_ass_editor(stage_only=False):
                 if len(lines) >= 3:
                     parsed_blocks.append({'ID': lines[0].strip(), 'Timeline': lines[1].strip(), 'Text': "\n".join(lines[2:]).strip()})
                     
+            b = f4_bracket_var.get().strip()
+            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
+            logic_mode = f4_logic_var.get()
+            use_c1 = f4_c1_var.get() == 1
+            # 对 SRT 会在底层判定器中自动忽略后两个参数
+            sel_effs, sel_styles = [], []
+
             for block in parsed_blocks:
                 p = [block['ID'], block['Timeline'], block['Text']]
-                c1_idx = int(f4_cond1_col.get().split(':')[0])
-                c1_val = f4_cond1_val.get().strip()
-                c2_idx = int(f4_cond2_col.get().split(':')[0])
-                c2_val = f4_cond2_val.get().strip()
                 tgt_idx = int(f4_target_col.get().split(':')[0])
                 
-                is_match = True
-                if f4_use_cond1.get() == 1 and c1_val:
-                    if not re.search(c1_val, p[c1_idx]): is_match = False
-                if f4_use_cond2.get() == 1 and c2_val and is_match:
-                    if not re.search(c2_val, p[c2_idx]): is_match = False
+                is_match = evaluate_advanced_condition("SRT", p, logic_mode, use_c1, l_b, r_b, False, sel_effs, False, sel_styles)
                     
                 if is_match:
                     for pat, repl in regex_rules:
                         p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
                         
                 block['ID'], block['Timeline'], block['Text'] = p[0], p[1], p[2]
-                
+            
             srt_content = [f"{b['ID']}\n{b['Timeline']}\n{b['Text']}\n" for b in parsed_blocks]
             final_content = "\n".join(srt_content)
             
@@ -3172,7 +3263,6 @@ def execute_ass_editor(stage_only=False):
                 global_ass_memory_cache[file] = final_content
                 with open(out_path, 'w', encoding='utf-8') as f: f.write(final_content)
             continue
-
         # ================= ASS 处理 =================
         lines = content.split('\n')
         h_lines, s_lines, ev_lines = [], [], []
@@ -3256,6 +3346,16 @@ def execute_ass_editor(stage_only=False):
             b = edit_m2_bracket.get().strip()
             l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
             
+            logic_mode = m2_logic_var.get()
+            use_c1 = m2_c1_var.get() == 1
+            use_c2 = m2_c2_var.get() == 1
+            use_c3 = m2_c3_var.get() == 1
+            sel_effs = [lb_m2_effs.get(i) for i in lb_m2_effs.curselection()]
+            sel_styles = [lb_m2_styles.get(i) for i in lb_m2_styles.curselection()]
+
+            if use_c2 and not sel_effs: return messagebox.showwarning("警告", "功能2：勾选了特效条件，但未在列表中选中任何特效！")
+            if use_c3 and not sel_styles: return messagebox.showwarning("警告", "功能2：勾选了样式条件，但未在列表中选中任何样式！")
+
             n_line, s_line = "", ""
             if edit_m2_mode.get() == 0:
                 n_line = build_ass_style_line("对白字幕", e_m2n_font.get(), e_m2n_size.get(), e_m2n_col.get(), e_m2n_ocol.get(), e_m2n_mv.get(), e_m2n_mlr.get(), e_m2n_outl.get(), e_m2n_align.get(), e_m2n_shad.get(), e_m2n_bold.get(), e_m2n_ita.get(), e_m2n_alpha.get(), e_m2n_outalpha.get())
@@ -3265,6 +3365,7 @@ def execute_ass_editor(stage_only=False):
                 rp, rn, rs = m2_ref_path.get(), m2_ref_n.get(), m2_ref_s.get()
                 if not os.path.exists(rp) or not rn or not rs: return messagebox.showwarning("警告", "请正确提供参考文件和两类样式！")
                 ref_dict = scan_all_styles_from_ass(rp)
+                if rn not in ref_dict or rs not in ref_dict: return messagebox.showwarning("错误", "参考文件中未找到指定的对白或画面字样式！")
                 n_line = rename_style_line(ref_dict[rn], rn)
                 s_line = rename_style_line(ref_dict[rs], rs)
                 if e_m2_font_mode.get() == 1:
@@ -3284,24 +3385,10 @@ def execute_ass_editor(stage_only=False):
             for ev in ev_lines:
                 parts = ev.split(',', 9)
                 if len(parts) >= 10 and ev.strip().startswith('Dialogue:'):
-                    txt = parts[9]
-                    c_txt = re.sub(r'\{.*?\}', '', txt).strip()
-                    if l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b):
-                        parts[3] = s_name
-                        new_ev.append(",".join(parts))
-                    elif l_b and r_b and l_b in txt and r_b in txt:
-                        pat = f"{re.escape(l_b)}[\\s\\S]*?{re.escape(r_b)}"
-                        s_t = clean_ass_text("\\N".join(re.findall(pat, txt)))
-                        n_t = clean_ass_text(re.sub(pat, "", txt).strip())
-                        if s_t:
-                            s_p = list(parts); s_p[3] = s_name; s_p[9] = s_t
-                            new_ev.append(",".join(s_p))
-                        if n_t:
-                            n_p = list(parts); n_p[3] = n_name; n_p[9] = n_t
-                            new_ev.append(",".join(n_p))
-                    else:
-                        parts[3] = n_name
-                        new_ev.append(",".join(parts))
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                    if is_screen: parts[3] = s_name
+                    else: parts[3] = n_name
+                    new_ev.append(",".join(parts))
                 else: new_ev.append(ev)
             ev_lines = new_ev
 
@@ -3361,24 +3448,28 @@ def execute_ass_editor(stage_only=False):
                     if not rep: s_lines.append(n_line)
 
         # ====== 功能3 (批量/条件正则替换 - ASS处理) ======
+        # ====== 功能3 (批量/条件正则替换 - ASS处理) ======
         elif mode == 3:
+            b = f4_bracket_var.get().strip()
+            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
+            logic_mode = f4_logic_var.get()
+            use_c1 = f4_c1_var.get() == 1
+            use_c2 = f4_c2_var.get() == 1
+            use_c3 = f4_c3_var.get() == 1
+            sel_effs = [lb_f4_effs.get(i) for i in lb_f4_effs.curselection()]
+            sel_styles = [lb_f4_styles.get(i) for i in lb_f4_styles.curselection()]
+
+            if use_c2 and not sel_effs: return messagebox.showwarning("警告", "正则替换：勾选了特效条件，但未选中任何特效！")
+            if use_c3 and not sel_styles: return messagebox.showwarning("警告", "正则替换：勾选了样式条件，但未选中任何样式！")
+
             tgt_idx = int(f4_target_col.get().split(':')[0])
-            c1_idx = int(f4_cond1_col.get().split(':')[0])
-            c1_val = f4_cond1_val.get().strip()
-            c2_idx = int(f4_cond2_col.get().split(':')[0])
-            c2_val = f4_cond2_val.get().strip()
             
             new_ev = []
             for ev in ev_lines:
                 if ev.startswith('Dialogue:'):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
-                        is_match = True
-                        if f4_use_cond1.get() == 1 and c1_val:
-                            if not re.search(c1_val, p[c1_idx]): is_match = False
-                        if f4_use_cond2.get() == 1 and c2_val and is_match:
-                            if not re.search(c2_val, p[c2_idx]): is_match = False
-                            
+                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
                         if is_match:
                             for pat, repl in regex_rules:
                                 p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
@@ -3386,7 +3477,6 @@ def execute_ass_editor(stage_only=False):
                     else: new_ev.append(ev)
                 else: new_ev.append(ev)
             ev_lines = new_ev
-
         # ====== 功能4 ======
         elif mode == 4:
             sel_items = m7_tree.selection()
@@ -3426,13 +3516,19 @@ def execute_ass_editor(stage_only=False):
 
         # ====== 功能5: 条件定位替换样式 ======
         elif mode == 5:
-            if f8_use_cond1.get() == 0 and f8_use_cond2.get() == 0:
-                return messagebox.showwarning("警告", "请至少启用一个定位条件！")
+            b = f8_bracket_var.get().strip()
+            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
+            logic_mode = f8_logic_var.get()
+            use_c1 = f8_c1_var.get() == 1
+            use_c2 = f8_c2_var.get() == 1
+            use_c3 = f8_c3_var.get() == 1
+            sel_effs = [lb_f8_effs.get(i) for i in lb_f8_effs.curselection()]
+            sel_styles = [lb_f8_styles.get(i) for i in lb_f8_styles.curselection()]
 
-            c1_idx = int(f8_cond1_col.get().split(':')[0])
-            c1_val = f8_cond1_val.get().strip()
-            c2_idx = int(f8_cond2_col.get().split(':')[0])
-            c2_val = f8_cond2_val.get().strip()
+            if not use_c1 and not use_c2 and not use_c3:
+                return messagebox.showwarning("警告", "请至少启用一个定位条件！")
+            if use_c2 and not sel_effs: return messagebox.showwarning("警告", "条件替换：勾选了特效条件，但未选中特效！")
+            if use_c3 and not sel_styles: return messagebox.showwarning("警告", "条件替换：勾选了样式条件，但未选中样式！")
             
             new_style_name = edit_m8_target_var.get().strip()
             if not new_style_name: return messagebox.showwarning("警告", "请输入赋予的新样式名称！")
@@ -3454,11 +3550,7 @@ def execute_ass_editor(stage_only=False):
                 if ev.startswith('Dialogue:'):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
-                        is_match = True
-                        if f8_use_cond1.get() == 1:
-                            if not re.search(c1_val, p[c1_idx]): is_match = False
-                        if f8_use_cond2.get() == 1 and is_match:
-                            if not re.search(c2_val, p[c2_idx]): is_match = False
+                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
                             
                         if is_match:
                             p[3] = new_style_name
@@ -3493,11 +3585,6 @@ def execute_ass_editor(stage_only=False):
             messagebox.showinfo("完成", f"落盘导出完成！但有 {len(all_errors)} 处时间轴不匹配，已导出报错报告。")
         else:
             messagebox.showinfo("完成", f"落盘完成！所有流式处理已同步到输出文件夹中的 {len(files)} 个文件！")
-
-f_edit_bot_btns = ttk.Frame(tab_edit)
-f_edit_bot_btns.grid(row=3, column=0, columnspan=3, pady=10)
-ttk.Button(f_edit_bot_btns, text="💾 暂存当前更改到内存引擎", command=lambda: execute_ass_editor(stage_only=True), style='TButton').pack(side=tk.LEFT, padx=10, ipadx=10, ipady=5)
-ttk.Button(f_edit_bot_btns, text="▶ 执行全部批处理并保存到输出文件夹", command=lambda: execute_ass_editor(stage_only=False), style='TButton').pack(side=tk.LEFT, padx=10, ipadx=10, ipady=5)
 
 # ================= TAB 7: 批量复用指定列(SRT/ASS) =================
 tab_eff = ttk.Frame(nb_ass, padding=20)
@@ -3548,7 +3635,7 @@ ttk.Button(tab_eff, text="执行指定列批量复制", command=run_column_copy,
 
 # ================= TAB 10: ASS 拆分 (画面字/普通字) =================
 tab_ass_split = ttk.Frame(nb_ass, padding=10)
-nb_ass.add(tab_ass_split, text=" ASS拆分(画面/对白) ")
+nb_ass.add(tab_ass_split, text=" ASS拆分 ")
 tab_ass_split.columnconfigure(1, weight=1)
 
 split_ass_in_var = tk.StringVar()
@@ -3559,7 +3646,6 @@ ttk.Entry(tab_ass_split, textvariable=split_ass_in_var).grid(row=0, column=1, st
 f_split_in_btns = ttk.Frame(tab_ass_split)
 f_split_in_btns.grid(row=0, column=2, sticky="w", padx=5)
 ttk.Button(f_split_in_btns, text="浏览...", command=lambda: ask_dir(split_ass_in_var, "选择目录")).pack(side=tk.LEFT)
-ttk.Button(f_split_in_btns, text="🔍 扫描特效与样式", command=scan_ass_split_features).pack(side=tk.LEFT, padx=5)
 
 ttk.Label(tab_ass_split, text="画面字 ASS 存至:").grid(row=1, column=0, sticky="e", pady=5, padx=5)
 ttk.Entry(tab_ass_split, textvariable=split_ass_out_scr_var).grid(row=1, column=1, sticky="ew", padx=5)
@@ -3569,46 +3655,13 @@ ttk.Label(tab_ass_split, text="普通字 ASS 存至:").grid(row=2, column=0, sti
 ttk.Entry(tab_ass_split, textvariable=split_ass_out_norm_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ass_split, text="浏览...", command=lambda: ask_dir(split_ass_out_norm_var, "选择目录")).grid(row=2, column=2, sticky="w", padx=5)
 
-f_split_cond = ttk.LabelFrame(tab_ass_split, text="拆分判定条件 (可多选组合，选中项需同时满足即为画面字，其余为普通字)", padding=10)
+# 完美复用高级判定组件
+f_split_cond, split_ass_logic_var, split_ass_c1_var, split_ass_bracket_var, split_ass_c2_var, lb_split_effs, split_ass_c3_var, lb_split_styles = build_advanced_condition_ui(tab_ass_split, split_ass_in_var, "拆分判定条件 (组合判定为画面字，其余为普通字)")
 f_split_cond.grid(row=3, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
-
-# 条件 1
-split_ass_c1_var = tk.IntVar(value=0)
-split_ass_bracket_var = tk.StringVar(value="【】")
-f_sc1 = ttk.Frame(f_split_cond)
-f_sc1.pack(fill=tk.X, pady=2)
-ttk.Checkbutton(f_sc1, text="条件1: 文本前后包含指定符号组合:", variable=split_ass_c1_var).pack(side=tk.LEFT)
-ttk.Entry(f_sc1, textvariable=split_ass_bracket_var, width=10).pack(side=tk.LEFT, padx=5)
-ttk.Label(f_sc1, text="(如【】、{}，匹配去除特效后的纯文本)", foreground="gray").pack(side=tk.LEFT)
-
-# 条件 2
-split_ass_c2_var = tk.IntVar(value=0)
-f_sc2 = ttk.Frame(f_split_cond)
-f_sc2.pack(fill=tk.X, pady=5)
-ttk.Checkbutton(f_sc2, text="条件2: 包含在以下选中的【特效说明 Effect】内 (支持按住 Ctrl 多选):", variable=split_ass_c2_var).pack(anchor="w")
-f_sc2_lb = ttk.Frame(f_sc2)
-f_sc2_lb.pack(fill=tk.X, padx=20, pady=2)
-lb_split_effs = tk.Listbox(f_sc2_lb, selectmode=tk.MULTIPLE, height=4, exportselection=False)
-lb_split_effs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-sb_split_effs = ttk.Scrollbar(f_sc2_lb, command=lb_split_effs.yview)
-sb_split_effs.pack(side=tk.LEFT, fill=tk.Y)
-lb_split_effs.config(yscrollcommand=sb_split_effs.set)
-
-# 条件 3
-split_ass_c3_var = tk.IntVar(value=0)
-f_sc3 = ttk.Frame(f_split_cond)
-f_sc3.pack(fill=tk.X, pady=5)
-ttk.Checkbutton(f_sc3, text="条件3: 包含在以下选中的【样式名称 Style】内 (支持按住 Ctrl 多选):", variable=split_ass_c3_var).pack(anchor="w")
-f_sc3_lb = ttk.Frame(f_sc3)
-f_sc3_lb.pack(fill=tk.X, padx=20, pady=2)
-lb_split_styles = tk.Listbox(f_sc3_lb, selectmode=tk.MULTIPLE, height=4, exportselection=False)
-lb_split_styles.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-sb_split_styles = ttk.Scrollbar(f_sc3_lb, command=lb_split_styles.yview)
-sb_split_styles.pack(side=tk.LEFT, fill=tk.Y)
-lb_split_styles.config(yscrollcommand=sb_split_styles.set)
 
 # 新增：保存为 SRT 的勾选选项
 split_ass_to_srt_var = tk.IntVar(value=0)
+
 ttk.Checkbutton(tab_ass_split, text="拆分后自动剥离特效与样式，直接转为标准 SRT 格式保存", variable=split_ass_to_srt_var).grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 0))
 
 ttk.Button(tab_ass_split, text="▶ 开始拆分 ASS", command=run_ass_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
