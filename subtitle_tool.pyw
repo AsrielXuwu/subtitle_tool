@@ -2833,7 +2833,6 @@ def open_video_preview():
                 
         threading.Thread(target=task, daemon=True).start()
 
-    # ================= 核心3：精准坐标轴 UI 渲染 =================
     # ================= 核心3：精准坐标轴 UI 渲染 (Subtitle Edit 高仿版) =================
     def update_overlay():
         canvas.delete("overlay")
