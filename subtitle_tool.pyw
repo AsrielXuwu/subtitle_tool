@@ -1180,6 +1180,8 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
             elif curr == "events": ev_lines.append(line)
             
         screen_ev, normal_ev = [], []
+        has_screen_dialogue = False  # 新增：标记当前文件是否真的提取到了画面字
+        
         for ev in ev_lines:
             if ev.startswith('Dialogue:'):
                 parts = ev.split(',', 9)
@@ -1187,17 +1189,15 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
                     style = parts[3].strip()
                     effect = parts[8].strip()
                     txt = parts[9]
-                    c_txt = re.sub(r'\{.*?\}', '', txt).strip()
-                    
-                    style = parts[3].strip()
-                    effect = parts[8].strip()
-                    txt = parts[9]
                     
                     # 接入全局高级判定求值器
                     is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
-                            
-                    if is_screen: screen_ev.append(ev)
-                    else: normal_ev.append(ev)
+                    
+                    if is_screen: 
+                        screen_ev.append(ev)
+                        has_screen_dialogue = True  # 记录：确实找到了符合条件的画面字
+                    else: 
+                        normal_ev.append(ev)
                 else:
                     screen_ev.append(ev)
                     normal_ev.append(ev)
@@ -1207,13 +1207,19 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
                 
         base_name = os.path.splitext(file)[0]
         if to_srt:
-            with open(os.path.join(out_scr_dir, base_name + '.srt'), 'w', encoding='utf-8') as f:
-                f.write(convert_to_srt_blocks(screen_ev))
+            # 只有在找到画面字时，才真正生成并输出画面字的 SRT 文件
+            if has_screen_dialogue:
+                with open(os.path.join(out_scr_dir, base_name + '.srt'), 'w', encoding='utf-8') as f:
+                    f.write(convert_to_srt_blocks(screen_ev))
+            # 普通字文件始终输出
             with open(os.path.join(out_norm_dir, base_name + '.srt'), 'w', encoding='utf-8') as f:
                 f.write(convert_to_srt_blocks(normal_ev))
         else:
-            with open(os.path.join(out_scr_dir, file), 'w', encoding='utf-8') as f:
-                f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(screen_ev) + "\n")
+            # 只有在找到画面字时，才真正生成并输出画面字的 ASS 文件
+            if has_screen_dialogue:
+                with open(os.path.join(out_scr_dir, file), 'w', encoding='utf-8') as f:
+                    f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(screen_ev) + "\n")
+            # 普通字文件始终输出
             with open(os.path.join(out_norm_dir, file), 'w', encoding='utf-8') as f:
                 f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(normal_ev) + "\n")
             
