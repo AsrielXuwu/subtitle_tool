@@ -20,6 +20,160 @@ except ImportError:
 # ======= 新增：全局 ASS 内存暂存字典 =======
 global_ass_memory_cache = {}
 
+# ====== 新增：全局复用的滚动标签页构造器 ======
+def create_scrollable_tab(notebook, text, padding=10):
+    outer_frame = ttk.Frame(notebook)
+    notebook.add(outer_frame, text=text)
+
+    canvas = tk.Canvas(outer_frame, highlightthickness=0)
+    scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=canvas.yview)
+    inner_frame = ttk.Frame(canvas, padding=padding)
+
+    # 动态更新滚动区域
+    inner_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    
+    # 强制内部 Frame 宽度自动拉伸，匹配 Canvas 宽度（保证 sticky="ew" 生效）
+    def on_canvas_configure(event):
+        canvas.itemconfig(canvas_window, width=event.width)
+    canvas.bind("<Configure>", on_canvas_configure)
+
+    canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+    canvas.configure(yscrollcommand=scrollbar.set)
+
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar.pack(side="right", fill="y")
+    
+    # 跨平台鼠标滚轮事件绑定 (仅当鼠标进入该区域时生效，防止干扰其他组件)
+    def _on_mousewheel(event):
+        if event.num == 4 or getattr(event, 'delta', 0) > 0:
+            canvas.yview_scroll(-1, "units")
+        elif event.num == 5 or getattr(event, 'delta', 0) < 0:
+            canvas.yview_scroll(1, "units")
+            
+    def _bind_mouse(event):
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", _on_mousewheel) # Linux 支持
+        canvas.bind_all("<Button-5>", _on_mousewheel) # Linux 支持
+        
+    def _unbind_mouse(event):
+        canvas.unbind_all("<MouseWheel>")
+        canvas.unbind_all("<Button-4>")
+        canvas.unbind_all("<Button-5>")
+        
+    canvas.bind("<Enter>", _bind_mouse)
+    canvas.bind("<Leave>", _unbind_mouse)
+
+    return inner_frame
+# ==========================================================
+
+# ====== 新增：全局复用高级判定条件 UI 构造器与求值器 ======
+def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件"):
+    f_cond = ttk.LabelFrame(parent_widget, text=title, padding=10)
+    
+    logic_var = tk.IntVar(value=0)
+    f_logic = ttk.Frame(f_cond)
+    f_logic.pack(fill=tk.X, pady=(0, 5))
+    ttk.Label(f_logic, text="多条件组合逻辑:").pack(side=tk.LEFT)
+    ttk.Radiobutton(f_logic, text="【与】模式 (选中条件必须同时满足才执行)", variable=logic_var, value=0).pack(side=tk.LEFT, padx=(5, 10))
+    ttk.Radiobutton(f_logic, text="【或】模式 (选中条件只需满足任意一项即执行)", variable=logic_var, value=1).pack(side=tk.LEFT)
+
+    c1_var = tk.IntVar(value=0)
+    bracket_var = tk.StringVar(value="【】")
+    f_c1 = ttk.Frame(f_cond)
+    f_c1.pack(fill=tk.X, pady=2)
+    ttk.Checkbutton(f_c1, text="条件1: 文本前后包含指定符号组合:", variable=c1_var).pack(side=tk.LEFT)
+    ttk.Entry(f_c1, textvariable=bracket_var, width=10).pack(side=tk.LEFT, padx=5)
+    ttk.Label(f_c1, text="(必须包裹整条字幕首尾)", foreground="gray").pack(side=tk.LEFT)
+    
+    def scan_features():
+        # 2. 将原本写死的 edit_in_var 改为使用传入的 in_dir_var
+        d = in_dir_var.get().strip()
+        if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在上方输入文件夹中选择目录！")
+        ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
+        if not ass_files: return messagebox.showwarning("提示", "输入文件夹中未找到 .ass 文件！")
+        
+        effs, styles = set(), set()
+        for filepath in ass_files:
+            file_name = os.path.basename(filepath)
+            if file_name in global_ass_memory_cache:
+                lines = global_ass_memory_cache[file_name].split('\n')
+            else:
+                try:
+                    with open(filepath, 'r', encoding='utf-8-sig') as f: lines = f.read().split('\n')
+                except: continue
+                
+            for line in lines:
+                if line.startswith('Dialogue:'):
+                    p = line.split(',', 9)
+                    if len(p) >= 10:
+                        styles.add(p[3].strip())
+                        effs.add(p[8].strip())
+                        
+        lb_effs.delete(0, tk.END)
+        for e in sorted(list(effs)): lb_effs.insert(tk.END, e)
+        
+        lb_styles.delete(0, tk.END)
+        for s in sorted(list(styles)): lb_styles.insert(tk.END, s)
+        
+        messagebox.showinfo("成功", f"扫描完毕！\n共发现 {len(effs)} 种特效说明，{len(styles)} 种样式。")
+
+    ttk.Button(f_c1, text="🔍 扫描输入文件夹的特效与样式", command=scan_features).pack(side=tk.RIGHT, padx=5)
+
+    c2_var = tk.IntVar(value=0)
+    f_c2 = ttk.Frame(f_cond)
+    f_c2.pack(fill=tk.X, pady=2)
+    ttk.Checkbutton(f_c2, text="条件2: 包含在以下选中的【特效说明 Effect】内 (支持按住 Ctrl 多选):", variable=c2_var).pack(anchor="w")
+    f_c2_lb = ttk.Frame(f_c2)
+    f_c2_lb.pack(fill=tk.X, padx=20, pady=2)
+    lb_effs = tk.Listbox(f_c2_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
+    lb_effs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb_effs = ttk.Scrollbar(f_c2_lb, command=lb_effs.yview)
+    sb_effs.pack(side=tk.LEFT, fill=tk.Y)
+    lb_effs.config(yscrollcommand=sb_effs.set)
+
+    c3_var = tk.IntVar(value=0)
+    f_c3 = ttk.Frame(f_cond)
+    f_c3.pack(fill=tk.X, pady=2)
+    ttk.Checkbutton(f_c3, text="条件3: 包含在以下选中的【样式名称 Style】内 (支持按住 Ctrl 多选):", variable=c3_var).pack(anchor="w")
+    f_c3_lb = ttk.Frame(f_c3)
+    f_c3_lb.pack(fill=tk.X, padx=20, pady=2)
+    lb_styles = tk.Listbox(f_c3_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
+    lb_styles.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+    sb_styles = ttk.Scrollbar(f_c3_lb, command=lb_styles.yview)
+    sb_styles.pack(side=tk.LEFT, fill=tk.Y)
+    lb_styles.config(yscrollcommand=sb_styles.set)
+
+    return f_cond, logic_var, c1_var, bracket_var, c2_var, lb_effs, c3_var, lb_styles
+
+def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles):
+    # 如果三个条件都没勾选，视为无条件全部匹配（执行全量操作）
+    if not use_c1 and not use_c2 and not use_c3: return True
+        
+    if fmt == "ASS":
+        txt = p[9]
+        effect = p[8].strip()
+        style = p[3].strip()
+    else: # SRT
+        txt = p[2]
+        effect = ""
+        style = ""
+        use_c2 = False # SRT强制忽略特效
+        use_c3 = False # SRT强制忽略样式
+        
+    c_txt = re.sub(r'\{.*?\}', '', txt).strip()
+    
+    if logic_mode == 0: # AND
+        if use_c1 and not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return False
+        if use_c2 and effect not in sel_effs: return False
+        if use_c3 and style not in sel_styles: return False
+        return True
+    else: # OR
+        if use_c1 and (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return True
+        if use_c2 and effect in sel_effs: return True
+        if use_c3 and style in sel_styles: return True
+        return False
+# ==========================================================
+
 # ================= 预设配置文件 (跨平台兼容版) =================
 # 解决 PyInstaller 在 macOS 打包后无权限在当前目录读写 json 文件的问题
 def get_config_dir():
@@ -1066,6 +1220,132 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
         processed_count += 1
     return processed_count
 # ================= UI 交互回调 =================
+def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, regex_rules):
+    files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
+    if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
+    os.makedirs(out_dir, exist_ok=True)
+    
+    l_b, r_b = "", ""
+    if use_c1 and len(bracket_str) >= 2:
+        half = len(bracket_str) // 2
+        l_b, r_b = bracket_str[:half], bracket_str[half:]
+
+    def ass_time_to_ms(time_str):
+        parts = time_str.strip().split(':')
+        h = int(parts[0])
+        m = int(parts[1])
+        s, ms = parts[2].split('.')
+        return (h * 3600 + m * 60 + int(s)) * 1000 + int(ms) * 10
+
+    processed_count = 0
+    for file in files:
+        filepath = os.path.join(in_dir, file)
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
+            lines = f.read().split('\n')
+            
+        h_lines, s_lines, ev_lines = [], [], []
+        curr = "info"
+        for line in lines:
+            l = line.strip()
+            if l.startswith('[V4+ Styles]'): curr = "styles"
+            elif l.startswith('[Events]'): curr = "events"
+            
+            if curr == "info": h_lines.append(line)
+            elif curr == "styles": s_lines.append(line)
+            elif curr == "events": ev_lines.append(line)
+            
+        st_events, dt_events, parsed_order = [], [], []
+
+        # 复用核心分离提取算法
+        for ev in ev_lines:
+            if ev.startswith('Dialogue:'):
+                parts = ev.split(',', 9)
+                if len(parts) >= 10:
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                    
+                    st_ms = ass_time_to_ms(parts[1])
+                    ed_ms = ass_time_to_ms(parts[2])
+                    txt = parts[9]
+                    
+                    obj = {"parts": list(parts), "st": st_ms, "ed": ed_ms, "orig_txt": txt, "deleted": False, "appended_txts": [], "prepended_txts": []}
+                    
+                    if is_screen:
+                        st_events.append(obj)
+                    else:
+                        dt_events.append(obj)
+                        
+                    parsed_order.append([obj])
+                else:
+                    parsed_order.append([ev])
+            else:
+                parsed_order.append([ev])
+
+        # 选项2：重叠时间调整与合并
+        if opt2:
+            for st in st_events:
+                best_dt, max_overlap, best_dt_st = None, -1, -1
+
+                for dt in dt_events:
+                    overlap = min(st['ed'], dt['ed']) - max(st['st'], dt['st'])
+                    if overlap > threshold:
+                        if overlap > max_overlap:
+                            max_overlap, best_dt, best_dt_st = overlap, dt, dt['st']
+                        elif overlap == max_overlap:
+                            # 发生平局，采用打破平局策略
+                            if tie_mode == 0 and dt['st'] < best_dt_st:
+                                best_dt, best_dt_st = dt, dt['st']
+                            elif tie_mode == 1 and dt['st'] > best_dt_st:
+                                best_dt, best_dt_st = dt, dt['st']
+                
+                # 如果找到了最佳对齐字幕
+                if best_dt:
+                    st['parts'][1] = best_dt['parts'][1]
+                    st['parts'][2] = best_dt['parts'][2]
+                    st['st'] = best_dt['st']
+                    st['ed'] = best_dt['ed']
+
+                    if do_concat:
+                        txt_to_add = st['orig_txt']
+                        if do_regex:
+                            for pat, repl in regex_rules:
+                                txt_to_add = re.sub(pat, repl, txt_to_add)
+                        if concat_pos == 0:
+                            best_dt['prepended_txts'].append(txt_to_add)
+                        else:
+                            best_dt['appended_txts'].append(txt_to_add)
+                        
+                        if do_del: st['deleted'] = True
+
+        # 将缓冲好的拼接文本正式应用
+        if opt2 and do_concat:
+            for dt in dt_events:
+                pre_str = "".join(dt['prepended_txts'])
+                app_str = "".join(dt['appended_txts'])
+                if pre_str or app_str:
+                    dt['parts'][9] = pre_str + dt['parts'][9] + app_str
+
+        final_events = []
+        if opt1:
+            # 选项1开启：先排头部结构/注释，再排画面字，最后排对白
+            for group in parsed_order:
+                for item in group:
+                    if isinstance(item, str): final_events.append(item)
+            for st in st_events:
+                if not st['deleted']: final_events.append(",".join(st['parts']))
+            for dt in dt_events:
+                if not dt['deleted']: final_events.append(",".join(dt['parts']))
+        else:
+            # 不开启重排序：严格遵循原位组装
+            for group in parsed_order:
+                for item in group:
+                    if isinstance(item, str): final_events.append(item)
+                    elif not item['deleted']: final_events.append(",".join(item['parts']))
+                            
+        with open(os.path.join(out_dir, file), 'w', encoding='utf-8') as f:
+            f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(final_events) + "\n")
+            
+        processed_count += 1
+    return processed_count
 
 def run_ass_merge():
     dir1 = am_dir1_var.get().strip()
@@ -1562,6 +1842,107 @@ ttk.Button(tab_ts, text="浏览...", command=lambda: ask_dir(ts_scr_var, "选择
 
 ttk.Label(tab_ts, text="* 智能侦测：工具会逐行扫描文件，一旦发现某行字幕的【开始时间】早于上一行的【结束时间】，\n即自动判定该行为分界点。该行及下方划为对白字幕，上方划为画面字。", foreground="gray").grid(row=4, column=0, columnspan=3, pady=(5,10), sticky="w")
 ttk.Button(tab_ts, text="开始自动拆分", command=run_time_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+
+# ================= TAB 12: 时间轴操作 =================
+tab_time_op = create_scrollable_tab(nb_srt, " 时间轴操作 ", padding=20)
+tab_time_op.columnconfigure(1, weight=1)
+
+time_op_in_var, time_op_out_var = tk.StringVar(), tk.StringVar()
+time_op_bracket_var = tk.StringVar(value="【】")
+
+ttk.Label(tab_time_op, text="ASS 输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_time_op, textvariable=time_op_in_var).grid(row=0, column=1, sticky="ew", padx=5)
+ttk.Button(tab_time_op, text="浏览...", command=lambda: ask_dir(time_op_in_var, "选择目录")).grid(row=0, column=2, padx=5)
+
+ttk.Label(tab_time_op, text="ASS 输出文件夹:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_time_op, textvariable=time_op_out_var).grid(row=1, column=1, sticky="ew", padx=5)
+ttk.Button(tab_time_op, text="浏览...", command=lambda: ask_dir(time_op_out_var, "选择目录")).grid(row=1, column=2, padx=5)
+
+f_time_cond, time_logic_var, time_c1_var, time_bracket_var, time_c2_var, lb_time_effs, time_c3_var, lb_time_styles = build_advanced_condition_ui(tab_time_op, time_op_in_var, "第一步：画面字判定条件 (仅支持 ASS 格式)")
+f_time_cond.grid(row=2, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
+
+f_time_opts = ttk.LabelFrame(tab_time_op, text="第二步：执行操作 (基于上述判定分离出的结果)", padding=10)
+f_time_opts.grid(row=3, column=0, columnspan=3, sticky="ew", pady=5, padx=5)
+
+time_opt1_var = tk.IntVar(value=1)
+ttk.Checkbutton(f_time_opts, text="选项1：重排序重组 (将所有分离出的画面字统一挪动至上方，对白字幕至下方)", variable=time_opt1_var).pack(anchor="w", pady=2)
+
+time_opt2_var = tk.IntVar(value=1)
+ttk.Checkbutton(f_time_opts, text="选项2：调整画面字的重叠时间轴 (对齐至与之重叠时间最长的对白字幕)", variable=time_opt2_var).pack(anchor="w", pady=(10, 2))
+
+f_opt2_sub1 = ttk.Frame(f_time_opts)
+f_opt2_sub1.pack(fill=tk.X, padx=20, pady=2)
+time_tie_var = tk.IntVar(value=0)
+ttk.Label(f_opt2_sub1, text="重叠相同时优先对齐至:").pack(side=tk.LEFT)
+ttk.Radiobutton(f_opt2_sub1, text="最早出现的字幕", variable=time_tie_var, value=0).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f_opt2_sub1, text="最晚出现的字幕", variable=time_tie_var, value=1).pack(side=tk.LEFT, padx=5)
+
+time_thresh_var = tk.StringVar(value="0")
+ttk.Label(f_opt2_sub1, text="   |   重叠安全阈值(ms):").pack(side=tk.LEFT, padx=(15, 5))
+ttk.Entry(f_opt2_sub1, textvariable=time_thresh_var, width=6).pack(side=tk.LEFT)
+ttk.Label(f_opt2_sub1, text="(<=该阈值不调整)", foreground="gray").pack(side=tk.LEFT, padx=5)
+
+time_concat_var = tk.IntVar(value=0)
+ttk.Checkbutton(f_time_opts, text="选项2子选项：合并文本 (将调整好时间的画面字，拼接到对齐的对白字幕轨道中)", variable=time_concat_var).pack(anchor="w", pady=(10, 2))
+
+f_opt2_sub2 = ttk.Frame(f_time_opts)
+f_opt2_sub2.pack(fill=tk.X, padx=20, pady=2)
+time_concat_pos = tk.IntVar(value=0)
+ttk.Radiobutton(f_opt2_sub2, text="拼接到首部", variable=time_concat_pos, value=0).pack(side=tk.LEFT)
+ttk.Radiobutton(f_opt2_sub2, text="拼接到尾部", variable=time_concat_pos, value=1).pack(side=tk.LEFT, padx=10)
+time_concat_del = tk.IntVar(value=1)
+ttk.Checkbutton(f_opt2_sub2, text="合并后删除被合并的原独立画面字", variable=time_concat_del).pack(side=tk.LEFT, padx=20)
+
+time_regex_var = tk.IntVar(value=0)
+ttk.Checkbutton(f_time_opts, text="合并前先对这部分画面字正则替换):", variable=time_regex_var).pack(anchor="w", padx=20, pady=(10, 2))
+time_regex_text = tk.Text(f_time_opts, height=2, width=45, font=('Arial', 9))
+time_regex_text.pack(anchor="w", padx=40, pady=2)
+time_regex_text.insert(tk.END, "^ >>> 【\n$ >>> 】\n")
+
+def run_time_op():
+    in_d = time_op_in_var.get().strip()
+    out_d = time_op_out_var.get().strip()
+    if not in_d or not out_d: return messagebox.showwarning("警告", "请完整选择输入和输出文件夹！")
+    
+    logic_mode = time_logic_var.get()
+    u1 = time_c1_var.get() == 1
+    b_str = time_bracket_var.get().strip()
+    u2 = time_c2_var.get() == 1
+    sel_effs = [lb_time_effs.get(i) for i in lb_time_effs.curselection()]
+    u3 = time_c3_var.get() == 1
+    sel_styles = [lb_time_styles.get(i) for i in lb_time_styles.curselection()]
+
+    if not (u1 or u2 or u3): return messagebox.showwarning("警告", "请至少勾选一个画面字判定条件！")
+    if u2 and not sel_effs: return messagebox.showwarning("警告", "第一步：勾选了特效条件，但未选中任何特效！")
+    if u3 and not sel_styles: return messagebox.showwarning("警告", "第一步：勾选了样式条件，但未选中任何样式！")
+
+    opt1 = time_opt1_var.get() == 1
+    opt2 = time_opt2_var.get() == 1
+    tie_mode = time_tie_var.get()
+    try: threshold = float(time_thresh_var.get().strip())
+    except: return messagebox.showwarning("警告", "重叠安全阈值必须是有效数字！")
+    
+    do_concat = time_concat_var.get() == 1
+    concat_pos = time_concat_pos.get()
+    do_del = time_concat_del.get() == 1
+    do_regex = time_regex_var.get() == 1
+    
+    regex_rules = []
+    if do_regex:
+        raw_text = time_regex_text.get("1.0", tk.END).split('\n')
+        for line in raw_text:
+            if '>>>' in line:
+                pat, repl = line.split('>>>', 1)
+                repl_python = re.sub(r'\$(\d+)', r'\\\1', repl.strip())
+                regex_rules.append((pat.strip(), repl_python))
+    
+    try:
+        count = process_timeline_op(in_d, out_d, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, regex_rules)
+        messagebox.showinfo("完成", f"时间轴操作成功！\n共完美处理了 {count} 个 ASS 文件。")
+    except Exception as e:
+        messagebox.showerror("错误", f"处理失败:\n{str(e)}")
+
+ttk.Button(tab_time_op, text="▶ 执行时间轴操作", command=run_time_op, style='TButton').grid(row=4, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 
 # ================= TAB 4: 打包 =================
 tab_zip = ttk.Frame(nb_other, padding=20)
@@ -2172,160 +2553,6 @@ edit_nb = ttk.Notebook(tab_edit)
 # 修改：将 sticky="ew" 改为 sticky="nsew" (North-South-East-West)，允许上下左右全方位拉伸
 edit_nb.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=10, padx=5)
 # ==============================================================
-
-# ====== 新增：全局复用的滚动标签页构造器 ======
-def create_scrollable_tab(notebook, text, padding=10):
-    outer_frame = ttk.Frame(notebook)
-    notebook.add(outer_frame, text=text)
-
-    canvas = tk.Canvas(outer_frame, highlightthickness=0)
-    scrollbar = ttk.Scrollbar(outer_frame, orient="vertical", command=canvas.yview)
-    inner_frame = ttk.Frame(canvas, padding=padding)
-
-    # 动态更新滚动区域
-    inner_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-    
-    # 强制内部 Frame 宽度自动拉伸，匹配 Canvas 宽度（保证 sticky="ew" 生效）
-    def on_canvas_configure(event):
-        canvas.itemconfig(canvas_window, width=event.width)
-    canvas.bind("<Configure>", on_canvas_configure)
-
-    canvas_window = canvas.create_window((0, 0), window=inner_frame, anchor="nw")
-    canvas.configure(yscrollcommand=scrollbar.set)
-
-    canvas.pack(side="left", fill="both", expand=True)
-    scrollbar.pack(side="right", fill="y")
-    
-    # 跨平台鼠标滚轮事件绑定 (仅当鼠标进入该区域时生效，防止干扰其他组件)
-    def _on_mousewheel(event):
-        if event.num == 4 or getattr(event, 'delta', 0) > 0:
-            canvas.yview_scroll(-1, "units")
-        elif event.num == 5 or getattr(event, 'delta', 0) < 0:
-            canvas.yview_scroll(1, "units")
-            
-    def _bind_mouse(event):
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        canvas.bind_all("<Button-4>", _on_mousewheel) # Linux 支持
-        canvas.bind_all("<Button-5>", _on_mousewheel) # Linux 支持
-        
-    def _unbind_mouse(event):
-        canvas.unbind_all("<MouseWheel>")
-        canvas.unbind_all("<Button-4>")
-        canvas.unbind_all("<Button-5>")
-        
-    canvas.bind("<Enter>", _bind_mouse)
-    canvas.bind("<Leave>", _unbind_mouse)
-
-    return inner_frame
-# ==========================================================
-
-# ====== 新增：全局复用高级判定条件 UI 构造器与求值器 ======
-def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件"):
-    f_cond = ttk.LabelFrame(parent_widget, text=title, padding=10)
-    
-    logic_var = tk.IntVar(value=0)
-    f_logic = ttk.Frame(f_cond)
-    f_logic.pack(fill=tk.X, pady=(0, 5))
-    ttk.Label(f_logic, text="多条件组合逻辑:").pack(side=tk.LEFT)
-    ttk.Radiobutton(f_logic, text="【与】模式 (选中条件必须同时满足才执行)", variable=logic_var, value=0).pack(side=tk.LEFT, padx=(5, 10))
-    ttk.Radiobutton(f_logic, text="【或】模式 (选中条件只需满足任意一项即执行)", variable=logic_var, value=1).pack(side=tk.LEFT)
-
-    c1_var = tk.IntVar(value=0)
-    bracket_var = tk.StringVar(value="【】")
-    f_c1 = ttk.Frame(f_cond)
-    f_c1.pack(fill=tk.X, pady=2)
-    ttk.Checkbutton(f_c1, text="条件1: 文本前后包含指定符号组合:", variable=c1_var).pack(side=tk.LEFT)
-    ttk.Entry(f_c1, textvariable=bracket_var, width=10).pack(side=tk.LEFT, padx=5)
-    ttk.Label(f_c1, text="(必须包裹整条字幕首尾)", foreground="gray").pack(side=tk.LEFT)
-    
-    def scan_features():
-        # 2. 将原本写死的 edit_in_var 改为使用传入的 in_dir_var
-        d = in_dir_var.get().strip()
-        if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在上方输入文件夹中选择目录！")
-        ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
-        if not ass_files: return messagebox.showwarning("提示", "输入文件夹中未找到 .ass 文件！")
-        
-        effs, styles = set(), set()
-        for filepath in ass_files:
-            file_name = os.path.basename(filepath)
-            if file_name in global_ass_memory_cache:
-                lines = global_ass_memory_cache[file_name].split('\n')
-            else:
-                try:
-                    with open(filepath, 'r', encoding='utf-8-sig') as f: lines = f.read().split('\n')
-                except: continue
-                
-            for line in lines:
-                if line.startswith('Dialogue:'):
-                    p = line.split(',', 9)
-                    if len(p) >= 10:
-                        styles.add(p[3].strip())
-                        effs.add(p[8].strip())
-                        
-        lb_effs.delete(0, tk.END)
-        for e in sorted(list(effs)): lb_effs.insert(tk.END, e)
-        
-        lb_styles.delete(0, tk.END)
-        for s in sorted(list(styles)): lb_styles.insert(tk.END, s)
-        
-        messagebox.showinfo("成功", f"扫描完毕！\n共发现 {len(effs)} 种特效说明，{len(styles)} 种样式。")
-
-    ttk.Button(f_c1, text="🔍 扫描输入文件夹的特效与样式", command=scan_features).pack(side=tk.RIGHT, padx=5)
-
-    c2_var = tk.IntVar(value=0)
-    f_c2 = ttk.Frame(f_cond)
-    f_c2.pack(fill=tk.X, pady=2)
-    ttk.Checkbutton(f_c2, text="条件2: 包含在以下选中的【特效说明 Effect】内 (支持按住 Ctrl 多选):", variable=c2_var).pack(anchor="w")
-    f_c2_lb = ttk.Frame(f_c2)
-    f_c2_lb.pack(fill=tk.X, padx=20, pady=2)
-    lb_effs = tk.Listbox(f_c2_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
-    lb_effs.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    sb_effs = ttk.Scrollbar(f_c2_lb, command=lb_effs.yview)
-    sb_effs.pack(side=tk.LEFT, fill=tk.Y)
-    lb_effs.config(yscrollcommand=sb_effs.set)
-
-    c3_var = tk.IntVar(value=0)
-    f_c3 = ttk.Frame(f_cond)
-    f_c3.pack(fill=tk.X, pady=2)
-    ttk.Checkbutton(f_c3, text="条件3: 包含在以下选中的【样式名称 Style】内 (支持按住 Ctrl 多选):", variable=c3_var).pack(anchor="w")
-    f_c3_lb = ttk.Frame(f_c3)
-    f_c3_lb.pack(fill=tk.X, padx=20, pady=2)
-    lb_styles = tk.Listbox(f_c3_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
-    lb_styles.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    sb_styles = ttk.Scrollbar(f_c3_lb, command=lb_styles.yview)
-    sb_styles.pack(side=tk.LEFT, fill=tk.Y)
-    lb_styles.config(yscrollcommand=sb_styles.set)
-
-    return f_cond, logic_var, c1_var, bracket_var, c2_var, lb_effs, c3_var, lb_styles
-
-def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles):
-    # 如果三个条件都没勾选，视为无条件全部匹配（执行全量操作）
-    if not use_c1 and not use_c2 and not use_c3: return True
-        
-    if fmt == "ASS":
-        txt = p[9]
-        effect = p[8].strip()
-        style = p[3].strip()
-    else: # SRT
-        txt = p[2]
-        effect = ""
-        style = ""
-        use_c2 = False # SRT强制忽略特效
-        use_c3 = False # SRT强制忽略样式
-        
-    c_txt = re.sub(r'\{.*?\}', '', txt).strip()
-    
-    if logic_mode == 0: # AND
-        if use_c1 and not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return False
-        if use_c2 and effect not in sel_effs: return False
-        if use_c3 and style not in sel_styles: return False
-        return True
-    else: # OR
-        if use_c1 and (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return True
-        if use_c2 and effect in sel_effs: return True
-        if use_c3 and style in sel_styles: return True
-        return False
-# ==========================================================
 
 ASS_COLS = ["0: Layer", "1: Start", "2: End", "3: Style", "4: Name", "5: MarginL", "6: MarginR", "7: MarginV", "8: Effect", "9: Text"]
 SRT_COLS = ["0: ID", "1: Timeline", "2: Text"]
@@ -3195,6 +3422,29 @@ ttk.Radiobutton(f_m8_bot2, text="覆盖字体为:", variable=e_m8_font_mode, val
 cb_m8_ref_font = ttk.Combobox(f_m8_bot2, textvariable=e_m8_override_font, width=25)
 cb_m8_ref_font.pack(side=tk.LEFT, padx=5)
 update_m8_ui()
+# ======================= 这里开始插入 =======================
+# ------ 功能6: 批量重设分辨率 ------
+etab_res = ttk.Frame(edit_nb, padding=10)
+edit_nb.add(etab_res, text="批量重设分辨率")
+
+ttk.Label(etab_res, text="此功能将直接修改 ASS 文件的 [Script Info] 头信息。\n只需填好输入/输出文件夹，配置下方数值后点击下方【执行全部批处理】即可。", foreground="gray").pack(anchor="w", pady=(5, 10))
+
+f_res_inputs = ttk.Frame(etab_res)
+f_res_inputs.pack(anchor="w", pady=5)
+
+edit_res_x_var = tk.StringVar(value="1080")
+edit_res_y_var = tk.StringVar(value="1920")
+
+ttk.Label(f_res_inputs, text="目标分辨率 宽 (PlayResX):").pack(side=tk.LEFT)
+ttk.Entry(f_res_inputs, textvariable=edit_res_x_var, width=10).pack(side=tk.LEFT, padx=(5, 20))
+
+ttk.Label(f_res_inputs, text="高 (PlayResY):").pack(side=tk.LEFT)
+ttk.Entry(f_res_inputs, textvariable=edit_res_y_var, width=10).pack(side=tk.LEFT, padx=5)
+
+# 新增：等比缩放样式参数选项
+edit_res_scale_var = tk.IntVar(value=1)
+ttk.Checkbutton(etab_res, text="同时按比例缩放样式中的字号、左右/上下边距、阴影和描边等参数", variable=edit_res_scale_var).pack(anchor="w", pady=15)
+# ======================= 插入结束 =======================
 
 def execute_ass_editor(stage_only=False):
     i_dir, o_dir = edit_in_var.get().strip(), edit_out_var.get().strip()
@@ -3209,6 +3459,26 @@ def execute_ass_editor(stage_only=False):
     ext = '.srt' if fmt == "SRT" else '.ass'
     files = [f for f in os.listdir(i_dir) if f.lower().endswith(ext)]
     if not files: return messagebox.showwarning("警告", f"输入文件夹中没有 {ext} 文件！")
+
+    # ======================= 智能旁路逻辑：放行空操作直接输出暂存 =======================
+    is_empty = False
+    if mode == 0 and not lb_m0_vals.curselection(): is_empty = True
+    elif mode == 1:
+        if (m2_c2_var.get() == 1 and not lb_m2_effs.curselection()) or (m2_c3_var.get() == 1 and not lb_m2_styles.curselection()): is_empty = True
+    elif mode == 2 and not m3_ref_dir.get().strip(): is_empty = True
+    elif mode == 3:
+        if (f4_c2_var.get() == 1 and not lb_f4_effs.curselection()) or (f4_c3_var.get() == 1 and not lb_f4_styles.curselection()): is_empty = True
+    elif mode == 4 and not m7_tree.selection(): is_empty = True
+    elif mode == 5:
+        use_c1, use_c2, use_c3 = f8_c1_var.get() == 1, f8_c2_var.get() == 1, f8_c3_var.get() == 1
+        if not use_c1 and not use_c2 and not use_c3: is_empty = True
+        elif (use_c2 and not lb_f8_effs.curselection()) or (use_c3 and not lb_f8_styles.curselection()): is_empty = True
+    elif mode == 6 and (not edit_res_x_var.get().strip() or not edit_res_y_var.get().strip()): is_empty = True
+
+    # 如果当前标签页没操作、当前点击的是“输出”按钮，并且内存里有暂存的数据
+    if is_empty and not stage_only and global_ass_memory_cache:
+        mode = -1  # 将处理模式变更为旁路模式，绕过下方所有的标签页检查，直接将内存写出到文件
+    # ==============================================================================
     
     if mode == 2:
         ref_dir = m3_ref_dir.get().strip()
@@ -3241,6 +3511,7 @@ def execute_ass_editor(stage_only=False):
         else:
             if e_m8_resx.get().strip(): global_ref_resx = f"PlayResX: {e_m8_resx.get().strip()}"
             if e_m8_resy.get().strip(): global_ref_resy = f"PlayResY: {e_m8_resy.get().strip()}"
+            
     
     if rp and os.path.exists(rp):
         with open(rp, 'r', encoding='utf-8-sig') as f:
@@ -3608,6 +3879,63 @@ def execute_ass_editor(stage_only=False):
                     if sl.startswith('Style:') and sl.split('Style:')[1].split(',')[0].strip() == new_style_name:
                         s_lines[i] = new_line; rep = True
                 if not rep: s_lines.append(new_line)
+        # ====== 功能6: 批量重设分辨率及等比缩放 ======
+        elif mode == 6:
+            try:
+                target_rx = float(edit_res_x_var.get().strip())
+                target_ry = float(edit_res_y_var.get().strip())
+            except:
+                return messagebox.showwarning("警告", "分辨率必须是有效的数字！")
+                
+            do_scale = edit_res_scale_var.get() == 1
+
+            orig_rx, orig_ry = 384.0, 288.0 # ASS默认基准兜底
+            rx_idx, ry_idx = -1, -1
+
+            # 1. 扫描当前文件原有的分辨率
+            for idx, l in enumerate(h_lines):
+                if l.startswith('PlayResX:'):
+                    try: orig_rx = float(l.split(':')[1].strip())
+                    except: pass
+                    rx_idx = idx
+                elif l.startswith('PlayResY:'):
+                    try: orig_ry = float(l.split(':')[1].strip())
+                    except: pass
+                    ry_idx = idx
+            
+            # 2. 覆盖头文件分辨率信息
+            if rx_idx != -1: h_lines[rx_idx] = f"PlayResX: {int(target_rx)}"
+            else: h_lines.append(f"PlayResX: {int(target_rx)}")
+            
+            if ry_idx != -1: h_lines[ry_idx] = f"PlayResY: {int(target_ry)}"
+            else: h_lines.append(f"PlayResY: {int(target_ry)}")
+
+            # 3. 按动态比例换算所有样式的排版参数
+            if do_scale and orig_rx > 0 and orig_ry > 0:
+                scale_x = target_rx / orig_rx
+                scale_y = target_ry / orig_ry
+                scale_min = min(scale_x, scale_y) # 描边阴影采用最保守缩放比例
+
+                for idx, sl in enumerate(s_lines):
+                    if sl.startswith('Style:'):
+                        prefix, body = sl.split(':', 1)
+                        pts = body.split(',')
+                        if len(pts) >= 22:
+                            try:
+                                # Fontsize (2) -> 按 Y轴 缩放
+                                pts[2] = f"{float(pts[2]) * scale_y:.2f}".rstrip('0').rstrip('.')
+                                # Outline (16), Shadow (17) -> 按 最小比例缩放，防止粗细变形
+                                pts[16] = f"{float(pts[16]) * scale_min:.2f}".rstrip('0').rstrip('.')
+                                pts[17] = f"{float(pts[17]) * scale_min:.2f}".rstrip('0').rstrip('.')
+                                # MarginL (19), MarginR (20) -> 按 X轴 缩放 (强制整数)
+                                pts[19] = str(int(round(float(pts[19]) * scale_x)))
+                                pts[20] = str(int(round(float(pts[20]) * scale_x)))
+                                # MarginV (21) -> 按 Y轴 缩放 (强制整数)
+                                pts[21] = str(int(round(float(pts[21]) * scale_y)))
+                                
+                                s_lines[idx] = prefix + ":" + ",".join(pts)
+                            except:
+                                pass
 
         final_content = "\n".join(h_lines) + "\n\n" + "\n".join(s_lines) + "\n\n" + "\n".join(ev_lines)
         
