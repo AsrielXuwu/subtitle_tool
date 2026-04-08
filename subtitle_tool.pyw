@@ -1226,7 +1226,7 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
         processed_count += 1
     return processed_count
 # ================= UI 交互回调 =================
-def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, regex_rules):
+def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, do_final_regex, regex_rules):
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
     if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
     os.makedirs(out_dir, exist_ok=True)
@@ -1361,7 +1361,18 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
                 for item in group:
                     if isinstance(item, str): final_events.append(item)
                     elif not item['deleted']: final_events.append(",".join(item['parts']))
-                            
+
+        # ====== 新增：在所有合并、排序操作完成后，进行最终的全局正则替换 ======
+        if do_final_regex and regex_rules:
+            for i in range(len(final_events)):
+                if final_events[i].startswith('Dialogue:'):
+                    parts = final_events[i].split(',', 9)
+                    if len(parts) >= 10:
+                        for pat, repl in regex_rules:
+                            parts[9] = re.sub(pat, repl, parts[9])
+                        final_events[i] = ",".join(parts)
+        # ======================================================================
+                
         with open(os.path.join(out_dir, file), 'w', encoding='utf-8') as f:
             f.write("\n".join(h_lines) + "\n" + "\n".join(s_lines) + "\n" + "\n".join(final_events) + "\n")
             
@@ -1915,10 +1926,26 @@ time_concat_del = tk.IntVar(value=1)
 ttk.Checkbutton(f_opt2_sub2, text="合并后删除被合并的原独立画面字", variable=time_concat_del).pack(side=tk.LEFT, padx=20)
 
 time_regex_var = tk.IntVar(value=0)
-ttk.Checkbutton(f_time_opts, text="合并前先对这部分画面字正则替换):", variable=time_regex_var).pack(anchor="w", padx=20, pady=(10, 2))
-time_regex_text = tk.Text(f_time_opts, height=2, width=45, font=('Arial', 9))
+
+def toggle_final_regex():
+    if time_regex_var.get() == 1:
+        cb_time_final_regex.config(state="normal")
+    else:
+        cb_time_final_regex.config(state="disabled")
+        time_final_regex_var.set(0) # 父选项取消时，子选项自动取消
+
+ttk.Checkbutton(f_time_opts, text="合并前先对有重叠画面字正则替换:", variable=time_regex_var, command=toggle_final_regex).pack(anchor="w", padx=20, pady=(10, 2))
+
+# 新增：全局后续正则替换选项（初始禁用）
+time_final_regex_var = tk.IntVar(value=0)
+cb_time_final_regex = ttk.Checkbutton(f_time_opts, text="所有操作后再进行正则替换 (使用下方相同规则)", variable=time_final_regex_var, state="disabled")
+cb_time_final_regex.pack(anchor="w", padx=40, pady=(0, 2))
+
+time_regex_text = tk.Text(f_time_opts, height=3, width=70, font=('Arial', 9))
 time_regex_text.pack(anchor="w", padx=40, pady=2)
-time_regex_text.insert(tk.END, "^ >>> 【\n$ >>> 】\n")
+time_regex_text.insert(tk.END, r"""1. 查找指定数量的特定字符，此处为{2}，查找\\N或者\n: ^(?:.*(?:\\N|\n)){2}[\s\S]*$
+2. []替换为()并加上换行: \[([^\]]*)\] >>> ($1)\\N
+3. 只替换首尾的[]为()：^\[([\s\S]*)\]$ >>> ($1)""")
 
 def run_time_op():
     in_d = time_op_in_var.get().strip()
@@ -1947,18 +1974,29 @@ def run_time_op():
     concat_pos = time_concat_pos.get()
     do_del = time_concat_del.get() == 1
     do_regex = time_regex_var.get() == 1
+    do_final_regex = time_final_regex_var.get() == 1  # 新增：获取子选项状态
     
     regex_rules = []
     if do_regex:
         raw_text = time_regex_text.get("1.0", tk.END).split('\n')
         for line in raw_text:
-            if '>>>' in line:
-                pat, repl = line.split('>>>', 1)
-                repl_python = re.sub(r'\$(\d+)', r'\\\1', repl.strip())
-                regex_rules.append((pat.strip(), repl_python))
+            line_clean = line.strip('\r\n')
+            if not line_clean: continue
+            
+            if '>>>' in line_clean:
+                pat, repl = line_clean.split('>>>', 1)
+                if pat.endswith(' '): pat = pat[:-1]
+                if repl.startswith(' '): repl = repl[1:]
+            else:
+                pat = line_clean
+                repl = ""
+                
+            repl_python = re.sub(r'\$(\d+)', r'\\\1', repl)
+            regex_rules.append((pat, repl_python))
     
     try:
-        count = process_timeline_op(in_d, out_d, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, regex_rules)
+        # 新增：将 do_final_regex 传给底层引擎
+        count = process_timeline_op(in_d, out_d, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, do_final_regex, regex_rules)
         messagebox.showinfo("完成", f"时间轴操作成功！\n共完美处理了 {count} 个 ASS 文件。")
     except Exception as e:
         messagebox.showerror("错误", f"处理失败:\n{str(e)}")
@@ -2263,7 +2301,9 @@ ttk.Checkbutton(f_ass_txt, text="开启正则批量替换:", variable=ass_enable
 
 ass_regex_text = tk.Text(f_ass_txt, height=3, width=50, font=('Arial', 9))
 ass_regex_text.grid(row=1, column=1, sticky="ew", padx=5, pady=5)
-ass_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n例如将【】替换为[]，输入【(.*?)】 >>> [$1]")
+ass_regex_text.insert(tk.END, r"""1. 查找指定数量的特定字符，此处为{2}，查找\\N或者\n: ^(?:.*(?:\\N|\n)){2}[\s\S]*$
+2. []替换为()并加上换行: \[([^\]]*)\] >>> ($1)\\N
+3. 只替换首尾的[]为()：^\[([\s\S]*)\]$ >>> ($1)""")
 
 ass_merge_var = tk.IntVar(value=0)
 ass_merge_report_var = tk.StringVar()
@@ -2408,9 +2448,9 @@ ttk.Label(f_ms_txt_sub, text="应用到:").pack(side=tk.LEFT)
 ms_regex_target_var = tk.StringVar(value="画面字")
 ttk.Combobox(f_ms_txt_sub, textvariable=ms_regex_target_var, values=["画面字", "对白字幕", "全部"], width=10).pack(side=tk.LEFT, padx=5)
 
-ms_regex_text = tk.Text(f_ms_txt, height=2, width=50, font=('Arial', 9))
+ms_regex_text = tk.Text(f_ms_txt, height=3, width=50, font=('Arial', 9))
 ms_regex_text.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
-ms_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n例如将字幕首尾添加【】，输入(.*) >>> 【$1】\n")
+
 
 f_ms_style = ttk.LabelFrame(tab_ms, text="样式设置 (画面字将自动排在普通字上层)", padding=10)
 f_ms_style.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(5, 10), padx=5)
@@ -2882,7 +2922,9 @@ cb_f4_tgt.grid(row=1, column=1, sticky="w", padx=5)
 ttk.Label(etab_f4, text="正则替换规则:").grid(row=2, column=0, sticky="ne", pady=5)
 f4_regex_text = tk.Text(etab_f4, height=3, width=45, font=('Arial', 9))
 f4_regex_text.grid(row=2, column=1, columnspan=3, sticky="w", padx=5, pady=5)
-f4_regex_text.insert(tk.END, "示例_正则查找 >>> 示例_替换成什么\n【(.*?)】 >>> [$1]")
+f4_regex_text.insert(tk.END, r"""1. 查找指定数量的特定字符，此处为{2}，查找\\N或者\n: ^(?:.*(?:\\N|\n)){2}[\s\S]*$
+2. []替换为()并加上换行: \[([^\]]*)\] >>> ($1)\\N
+3. 只替换首尾的[]为()：^\[([\s\S]*)\]$ >>> ($1)""")
 
 f_f4_cond, f4_logic_var, f4_c1_var, f4_bracket_var, f4_c2_var, lb_f4_effs, f4_c3_var, lb_f4_styles = build_advanced_condition_ui(etab_f4, edit_in_var, "定位条件 (都不勾选则为针对目标列的全量批量替换)")
 f_f4_cond.grid(row=3, column=0, columnspan=4, sticky="ew", pady=10, padx=5)
@@ -3552,15 +3594,25 @@ def execute_ass_editor(stage_only=False):
     regex_rules = []
     if mode == 3: raw_text = f4_regex_text.get("1.0", tk.END).split('\n')
     else: raw_text = []
+    
     for line in raw_text:
-        if '>>>' in line:
-            pat, repl = line.split('>>>', 1)
-            repl_python = re.sub(r'\$(\d+)', r'\\\1', repl.strip())
-            regex_rules.append((pat.strip(), repl_python))
+        line_clean = line.strip('\r\n') # 只删换行符，完美保留左右可能需要的空格
+        if not line_clean: continue
+        
+        if '>>>' in line_clean:
+            pat, repl = line_clean.split('>>>', 1)
+            # 仅精准剥离 '>>>' 旁边紧挨着的一个多余空格
+            if pat.endswith(' '): pat = pat[:-1]
+            if repl.startswith(' '): repl = repl[1:]
         else:
-            # 如果没有 >>>，则把整行视为查找模式（替换文本设为空）
-            pat = line.strip()
+            # 如果没有 >>>，则把整行视为纯查找模式
+            pat = line_clean
             repl = ""
+            
+        repl_python = re.sub(r'\$(\d+)', r'\\\1', repl)
+        
+        # 修复 Bug：无论是有 >>> 还是没有 >>>，最后都必须将规则加进列表！
+        regex_rules.append((pat, repl_python))
 
     for file in files:
         if mode == 4 and file != m7_file_var.get().strip(): continue
@@ -3623,10 +3675,12 @@ def execute_ass_editor(stage_only=False):
             srt_content = [f"{b['ID']}\n{b['Timeline']}\n{b['Text']}\n" for b in parsed_blocks]
             final_content = "\n".join(srt_content)
             
-            if stage_only: global_ass_memory_cache[file] = final_content
-            else: 
-                global_ass_memory_cache[file] = final_content
-                with open(out_path, 'w', encoding='utf-8') as f: f.write(final_content)
+            # 新增：如果是只查找模式，拦截保存操作（不污染内存，也不输出文件）
+            if f4_find_only_var.get() == 0:
+                if stage_only: global_ass_memory_cache[file] = final_content
+                else: 
+                    global_ass_memory_cache[file] = final_content
+                    with open(out_path, 'w', encoding='utf-8') as f: f.write(final_content)
             continue
         # ================= ASS 处理 =================
         lines = content.split('\n')
@@ -3856,6 +3910,9 @@ def execute_ass_editor(stage_only=False):
                                 else:
                                     if gen_report: global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts), current_val])
                                     p[tgt_idx] = current_val
+                        
+                        # ====== 致命 Bug 修复：把处理完（或未处理）的字幕行塞回列表中 ======
+                        new_ev.append(",".join(p))
                     else: new_ev.append(ev)
                 else: new_ev.append(ev)
             ev_lines = new_ev
@@ -4009,12 +4066,16 @@ def execute_ass_editor(stage_only=False):
         final_content = "\n".join(h_lines) + "\n\n" + "\n".join(s_lines) + "\n\n" + "\n".join(ev_lines)
         
         # --- 根据按钮模式，分流输出目标 ---
-        if stage_only:
-            global_ass_memory_cache[file] = final_content
+        # 新增：如果当前处于正则功能且开启了只查找模式，拦截一切写入行为
+        if mode == 3 and f4_find_only_var.get() == 1:
+            pass
         else:
-            global_ass_memory_cache[file] = final_content
-            with open(out_path, 'w', encoding='utf-8') as f:
-                f.write(final_content)
+            if stage_only:
+                global_ass_memory_cache[file] = final_content
+            else:
+                global_ass_memory_cache[file] = final_content
+                with open(out_path, 'w', encoding='utf-8') as f:
+                    f.write(final_content)
 
     # ======================= 这里开始插入：正则报告输出 =======================
     if mode == 3 and f4_report_var.get() == 1 and global_report_data:
@@ -4037,15 +4098,18 @@ def execute_ass_editor(stage_only=False):
             messagebox.showinfo("报告已生成", f"正则查找/替换报告已生成至：\n{report_path}")
         except Exception as e:
             messagebox.showerror("生成报告失败", f"无法写入报告文件：\n{str(e)}")
-    # ======================= 插入结束 =======================
-    if stage_only:
+
+    # 新增：针对只查找模式的专属弹窗，避免误导
+    if mode == 3 and f4_find_only_var.get() == 1:
+        messagebox.showinfo("扫描完毕", f"查找任务结束！共扫描了 {len(files)} 个文件。\n\n由于您开启了【只查找不替换】模式，本次操作作为纯粹的数据检索，并未对任何字幕文件或内存产生修改/覆盖。")
+    elif stage_only:
         messagebox.showinfo("暂存成功", "【处理完毕】更改已无缝注入底层内存引擎！\n\n你可以随时切到其他标签页加载、刷新以进行二次、三次叠加操作。\n等所有流水线走完，只需点击底部【批量输出保存】按钮即可一次性落盘。")
     else:
         if mode == 2 and m3_err_rep.get().strip() and all_errors:
             pd.DataFrame(all_errors).to_excel(m3_err_rep.get().strip(), index=False)
-            messagebox.showinfo("完成", f"落盘导出完成！但有 {len(all_errors)} 处时间轴不匹配，已导出报错报告。")
+            messagebox.showinfo("完成", f"导出完成！但有 {len(all_errors)} 处时间轴不匹配，已导出报错报告。")
         else:
-            messagebox.showinfo("完成", f"落盘完成！所有流式处理已同步到输出文件夹中的 {len(files)} 个文件！")
+            messagebox.showinfo("完成", f"完成！所有流式处理已同步到输出文件夹中的 {len(files)} 个文件！")
 
 # ================= TAB 7: 批量复用指定列(SRT/ASS) =================
 tab_eff = ttk.Frame(nb_ass, padding=20)
