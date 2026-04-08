@@ -4099,7 +4099,7 @@ def execute_ass_editor(stage_only=False):
         except Exception as e:
             messagebox.showerror("生成报告失败", f"无法写入报告文件：\n{str(e)}")
 
-    # 新增：针对只查找模式的专属弹窗，避免误导
+    # 新增：针对只查找模式的专属弹窗，避免出现误导情况
     if mode == 3 and f4_find_only_var.get() == 1:
         messagebox.showinfo("扫描完毕", f"查找任务结束！共扫描了 {len(files)} 个文件。\n\n由于您开启了【只查找不替换】模式，本次操作作为纯粹的数据检索，并未对任何字幕文件或内存产生修改/覆盖。")
     elif stage_only:
