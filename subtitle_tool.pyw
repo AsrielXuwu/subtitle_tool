@@ -1262,8 +1262,8 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
             
         st_events, dt_events, parsed_order = [], [], []
 
-        # 复用核心分离提取算法
-        for ev in ev_lines:
+        # 接入全局高级判定求值器
+        for file_idx, ev in enumerate(ev_lines):
             if ev.startswith('Dialogue:'):
                 parts = ev.split(',', 9)
                 if len(parts) >= 10:
@@ -1273,11 +1273,13 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
                     ed_ms = ass_time_to_ms(parts[2])
                     txt = parts[9]
                     
-                    obj = {"parts": list(parts), "st": st_ms, "ed": ed_ms, "orig_txt": txt, "deleted": False, "appended_txts": [], "prepended_txts": []}
-                    
                     if is_screen:
+                        # 画面字：新增记录原始出现时间 st_ms 和 原文件行号 file_idx，用于后续的绝对时间排序
+                        obj = {"parts": list(parts), "st": st_ms, "ed": ed_ms, "orig_txt": txt, "deleted": False, "orig_idx": file_idx}
                         st_events.append(obj)
                     else:
+                        # 对白字：新增 matched_texts 列表，用于安全挂载所有跟它重叠的画面字
+                        obj = {"parts": list(parts), "st": st_ms, "ed": ed_ms, "orig_txt": txt, "deleted": False, "matched_texts": []}
                         dt_events.append(obj)
                         
                     parsed_order.append([obj])
@@ -1291,6 +1293,7 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
             for st in st_events:
                 best_dt, max_overlap, best_dt_st = None, -1, -1
 
+                # 【满足要求2】完全解耦的重叠扫描：画面字之间如何重叠无所谓，只找重叠最长的那个对白
                 for dt in dt_events:
                     overlap = min(st['ed'], dt['ed']) - max(st['st'], dt['st'])
                     if overlap > threshold:
@@ -1303,32 +1306,44 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
                             elif tie_mode == 1 and dt['st'] > best_dt_st:
                                 best_dt, best_dt_st = dt, dt['st']
                 
-                # 如果找到了最佳对齐字幕
+                # 如果找到了最佳对齐对白字幕
                 if best_dt:
                     st['parts'][1] = best_dt['parts'][1]
                     st['parts'][2] = best_dt['parts'][2]
-                    st['st'] = best_dt['st']
-                    st['ed'] = best_dt['ed']
-
+                    
                     if do_concat:
                         txt_to_add = st['orig_txt']
+                        
+                        # 【满足要求3】合并前，在此处对每一个画面字进行“单独”的正则替换
                         if do_regex:
                             for pat, repl in regex_rules:
                                 txt_to_add = re.sub(pat, repl, txt_to_add)
-                        if concat_pos == 0:
-                            best_dt['prepended_txts'].append(txt_to_add)
-                        else:
-                            best_dt['appended_txts'].append(txt_to_add)
+                        
+                        # 不直接傻瓜拼接，而是打包暂存到目标的列表中，保留它的原始时间信息
+                        best_dt['matched_texts'].append({
+                            "txt": txt_to_add,
+                            "time": st['st'],      # 画面字的初始出现时间
+                            "idx": st['orig_idx']  # 画面字在文件中的行号
+                        })
                         
                         if do_del: st['deleted'] = True
+                    else:
+                        st['st'] = best_dt['st']
+                        st['ed'] = best_dt['ed']
 
-        # 将缓冲好的拼接文本正式应用
+        # 【满足要求1】将缓冲好的拼接文本正式应用，并绝对保证按首次出现顺序
         if opt2 and do_concat:
             for dt in dt_events:
-                pre_str = "".join(dt['prepended_txts'])
-                app_str = "".join(dt['appended_txts'])
-                if pre_str or app_str:
-                    dt['parts'][9] = pre_str + dt['parts'][9] + app_str
+                if dt['matched_texts']:
+                    # 核心排序魔法：优先根据画面字的初始时间戳排序；时间戳一样时，按文件原有的上下先后排序
+                    dt['matched_texts'].sort(key=lambda x: (x['time'], x['idx']))
+                    
+                    combined_add_txt = "".join([x['txt'] for x in dt['matched_texts']])
+                    
+                    if concat_pos == 0:
+                        dt['parts'][9] = combined_add_txt + dt['parts'][9]
+                    else:
+                        dt['parts'][9] = dt['parts'][9] + combined_add_txt
 
         final_events = []
         if opt1:
@@ -2837,7 +2852,7 @@ ttk.Button(etab_sync, text="浏览...", command=lambda: ask_save_file(m3_err_rep
 
 # ------ 功能3: 批量/条件定位正则替换 (合并原功能5和6) ------
 etab_f4 = ttk.Frame(edit_nb, padding=10)
-edit_nb.add(etab_f4, text="批量/条件正则替换")
+edit_nb.add(etab_f4, text="批量/条件正则")
 
 f4_format_var = tk.StringVar(value="ASS")
 def update_f4_cols():
@@ -2852,6 +2867,12 @@ f4_top = ttk.Frame(etab_f4)
 f4_top.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 10))
 ttk.Radiobutton(f4_top, text="处理 ASS 格式", variable=f4_format_var, value="ASS", command=update_f4_cols).pack(side=tk.LEFT, padx=5)
 ttk.Radiobutton(f4_top, text="处理 SRT 格式", variable=f4_format_var, value="SRT", command=update_f4_cols).pack(side=tk.LEFT, padx=5)
+
+# 新增：只查找不替换 & 输出报告
+f4_find_only_var = tk.IntVar(value=0)
+ttk.Checkbutton(f4_top, text="只查找不替换", variable=f4_find_only_var).pack(side=tk.LEFT, padx=(20, 5))
+f4_report_var = tk.IntVar(value=0)
+ttk.Checkbutton(f4_top, text="输出查找/替换报告 (CSV格式)", variable=f4_report_var).pack(side=tk.LEFT, padx=5)
 
 f4_target_col = tk.StringVar(value=ASS_COLS[9])
 ttk.Label(etab_f4, text="需要应用正则替换的列:").grid(row=1, column=0, sticky="e", pady=5)
@@ -3466,6 +3487,9 @@ def execute_ass_editor(stage_only=False):
     files = [f for f in os.listdir(i_dir) if f.lower().endswith(ext)]
     if not files: return messagebox.showwarning("警告", f"输入文件夹中没有 {ext} 文件！")
 
+    # 新增：用于收集正则查找/替换的报告数据
+    global_report_data = []
+
     # ======================= 智能旁路逻辑：放行空操作直接输出暂存 =======================
     is_empty = False
     if mode == 0 and not lb_m0_vals.curselection(): is_empty = True
@@ -3533,6 +3557,10 @@ def execute_ass_editor(stage_only=False):
             pat, repl = line.split('>>>', 1)
             repl_python = re.sub(r'\$(\d+)', r'\\\1', repl.strip())
             regex_rules.append((pat.strip(), repl_python))
+        else:
+            # 如果没有 >>>，则把整行视为查找模式（替换文本设为空）
+            pat = line.strip()
+            repl = ""
 
     for file in files:
         if mode == 4 and file != m7_file_var.get().strip(): continue
@@ -3569,8 +3597,26 @@ def execute_ass_editor(stage_only=False):
                 is_match = evaluate_advanced_condition("SRT", p, logic_mode, use_c1, l_b, r_b, False, sel_effs, False, sel_styles)
                     
                 if is_match:
+                    orig_tgt = p[tgt_idx]
+                    current_val = orig_tgt
+                    matched_parts = []
+                    find_only = f4_find_only_var.get() == 1
+                    gen_report = f4_report_var.get() == 1
+                    
                     for pat, repl in regex_rules:
-                        p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
+                        # 核心修改：利用 finditer 准确提取匹配到的文本
+                        matches = list(re.finditer(pat, current_val))
+                        if matches:
+                            matched_parts.extend([m.group(0) for m in matches])
+                            if not find_only:
+                                current_val = re.sub(pat, repl, current_val)
+                                
+                    if matched_parts:
+                        if find_only:
+                            if gen_report: global_report_data.append([file, p[1], p[2], orig_tgt, " | ".join(matched_parts)])
+                        else:
+                            if gen_report: global_report_data.append([file, p[1], p[2], orig_tgt, " | ".join(matched_parts), current_val])
+                            p[tgt_idx] = current_val
                         
                 block['ID'], block['Timeline'], block['Text'] = p[0], p[1], p[2]
             
@@ -3767,7 +3813,6 @@ def execute_ass_editor(stage_only=False):
                     if not rep: s_lines.append(n_line)
 
         # ====== 功能3 (批量/条件正则替换 - ASS处理) ======
-        # ====== 功能3 (批量/条件正则替换 - ASS处理) ======
         elif mode == 3:
             b = f4_bracket_var.get().strip()
             l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
@@ -3789,10 +3834,28 @@ def execute_ass_editor(stage_only=False):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
                         is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                        
                         if is_match:
+                            orig_tgt = p[tgt_idx]
+                            current_val = orig_tgt
+                            matched_parts = []
+                            find_only = f4_find_only_var.get() == 1
+                            gen_report = f4_report_var.get() == 1
+                            
                             for pat, repl in regex_rules:
-                                p[tgt_idx] = re.sub(pat, repl, p[tgt_idx])
-                        new_ev.append(",".join(p))
+                                matches = list(re.finditer(pat, current_val))
+                                if matches:
+                                    matched_parts.extend([m.group(0) for m in matches])
+                                    if not find_only:
+                                        current_val = re.sub(pat, repl, current_val)
+                                        
+                            if matched_parts:
+                                timeline = f"{p[1]} --> {p[2]}"
+                                if find_only:
+                                    if gen_report: global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts)])
+                                else:
+                                    if gen_report: global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts), current_val])
+                                    p[tgt_idx] = current_val
                     else: new_ev.append(ev)
                 else: new_ev.append(ev)
             ev_lines = new_ev
@@ -3952,7 +4015,29 @@ def execute_ass_editor(stage_only=False):
             global_ass_memory_cache[file] = final_content
             with open(out_path, 'w', encoding='utf-8') as f:
                 f.write(final_content)
-            
+
+    # ======================= 这里开始插入：正则报告输出 =======================
+    if mode == 3 and f4_report_var.get() == 1 and global_report_data:
+        import csv
+        out_d = edit_out_var.get().strip()
+        if not out_d:
+            # 兼容暂存模式下未填输出目录的情况，降级保存在输入目录
+            out_d = edit_in_var.get().strip() 
+        
+        report_path = os.path.join(out_d, "Regex_Report.csv")
+        try:
+            # 使用 utf-8-sig 以兼容 Excel 直接打开不乱码
+            with open(report_path, 'w', encoding='utf-8-sig', newline='') as f:
+                writer = csv.writer(f)
+                if f4_find_only_var.get() == 1:
+                    writer.writerow(["文件名", "时间轴", "原始字幕内容", "原始对应列内容", "查找匹配到的内容"])
+                else:
+                    writer.writerow(["文件名", "时间轴", "原始字幕内容", "原始对应列内容", "查找匹配到的内容", "替换后的对应列内容"])
+                writer.writerows(global_report_data)
+            messagebox.showinfo("报告已生成", f"正则查找/替换报告已生成至：\n{report_path}")
+        except Exception as e:
+            messagebox.showerror("生成报告失败", f"无法写入报告文件：\n{str(e)}")
+    # ======================= 插入结束 =======================
     if stage_only:
         messagebox.showinfo("暂存成功", "【处理完毕】更改已无缝注入底层内存引擎！\n\n你可以随时切到其他标签页加载、刷新以进行二次、三次叠加操作。\n等所有流水线走完，只需点击底部【批量输出保存】按钮即可一次性落盘。")
     else:
