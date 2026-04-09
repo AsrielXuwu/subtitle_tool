@@ -78,15 +78,14 @@ def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件")
     ttk.Radiobutton(f_logic, text="【或】模式 (选中条件只需满足任意一项即执行)", variable=logic_var, value=1).pack(side=tk.LEFT)
 
     c1_var = tk.IntVar(value=0)
-    bracket_var = tk.StringVar(value="【】")
+    bracket_var = tk.StringVar(value="^\\[")
     f_c1 = ttk.Frame(f_cond)
     f_c1.pack(fill=tk.X, pady=2)
-    ttk.Checkbutton(f_c1, text="条件1: 文本前后包含指定符号组合:", variable=c1_var).pack(side=tk.LEFT)
-    ttk.Entry(f_c1, textvariable=bracket_var, width=10).pack(side=tk.LEFT, padx=5)
-    ttk.Label(f_c1, text="(必须包裹整条字幕首尾)", foreground="gray").pack(side=tk.LEFT)
+    ttk.Checkbutton(f_c1, text="条件1: 匹配正则表达式:", variable=c1_var).pack(side=tk.LEFT)
+    ttk.Entry(f_c1, textvariable=bracket_var, width=15).pack(side=tk.LEFT, padx=5)
+    ttk.Label(f_c1, text="(例如 ^\\[ 即查找文本首部存在 [ 的行)", foreground="gray").pack(side=tk.LEFT)
     
     def scan_features():
-        # 2. 将原本写死的 edit_in_var 改为使用传入的 in_dir_var
         d = in_dir_var.get().strip()
         if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在上方输入文件夹中选择目录！")
         ass_files = [os.path.join(d, f) for f in os.listdir(d) if f.lower().endswith('.ass')]
@@ -145,8 +144,7 @@ def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件")
 
     return f_cond, logic_var, c1_var, bracket_var, c2_var, lb_effs, c3_var, lb_styles
 
-def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles):
-    # 如果三个条件都没勾选，视为无条件全部匹配（执行全量操作）
+def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles):
     if not use_c1 and not use_c2 and not use_c3: return True
         
     if fmt == "ASS":
@@ -157,20 +155,31 @@ def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, l_b, r_b, use_c2, se
         txt = p[2]
         effect = ""
         style = ""
-        use_c2 = False # SRT强制忽略特效
-        use_c3 = False # SRT强制忽略样式
+        use_c2 = False
+        use_c3 = False
         
     c_txt = re.sub(r'\{.*?\}', '', txt).strip()
     
+    match_c1 = False
+    if use_c1 and regex_pat:
+        try:
+            # 只要有任何匹配内容即视为 True，支持多行
+            match_c1 = bool(re.search(regex_pat, c_txt))
+        except:
+            pass # 若用户正则语法填错，则静默视为不匹配
+            
+    match_c2 = use_c2 and effect in sel_effs
+    match_c3 = use_c3 and style in sel_styles
+
     if logic_mode == 0: # AND
-        if use_c1 and not (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return False
-        if use_c2 and effect not in sel_effs: return False
-        if use_c3 and style not in sel_styles: return False
+        if use_c1 and not match_c1: return False
+        if use_c2 and not match_c2: return False
+        if use_c3 and not match_c3: return False
         return True
     else: # OR
-        if use_c1 and (l_b and r_b and c_txt.startswith(l_b) and c_txt.endswith(r_b)): return True
-        if use_c2 and effect in sel_effs: return True
-        if use_c3 and style in sel_styles: return True
+        if use_c1 and match_c1: return True
+        if use_c2 and match_c2: return True
+        if use_c3 and match_c3: return True
         return False
 # ==========================================================
 
@@ -807,14 +816,7 @@ def merge_ass_dialogues(dialogues_list, filename, report_list):
 # ================= 业务流程处理 =================
 
 def process_srt_to_ass(input_dir, out_dir, bracket_str, regex_text, custom_style_dict, do_merge, merge_report_path, style_mode, ref_cfg):
-    patterns = []
-    for b in bracket_str.replace('，', ',').split(','):
-        b = b.strip()
-        if len(b) >= 2:
-            half = len(b) // 2
-            l, r = re.escape(b[:half]), re.escape(b[half:])
-            patterns.append(f"{l}[\\s\\S]*?{r}")
-    bracket_regex = "|".join(patterns) if patterns else ""
+    regex_pat = bracket_str.strip()
 
     replacements = []
     for line in regex_text.split('\n'):
@@ -837,14 +839,21 @@ def process_srt_to_ass(input_dir, out_dir, bracket_str, regex_text, custom_style
 
         for block in blocks:
             text = block['Text']
-            if bracket_regex:
-                s_texts = re.findall(bracket_regex, text)
-                n_text = re.sub(bracket_regex, "", text).strip()
+            
+            is_screen = False
+            if regex_pat:
+                try:
+                    is_screen = bool(re.search(regex_pat, text))
+                except:
+                    pass
+
+            if is_screen:
+                s_text, n_text = text, ""
             else:
-                s_texts, n_text = [], text
+                s_text, n_text = "", text
 
             n_text = clean_ass_text(n_text)
-            s_text = clean_ass_text("\\N".join(s_texts))
+            s_text = clean_ass_text(s_text)
 
             for pat, repl in replacements:
                 if n_text: n_text = re.sub(pat, repl, n_text)
@@ -1138,10 +1147,7 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
     os.makedirs(out_scr_dir, exist_ok=True)
     os.makedirs(out_norm_dir, exist_ok=True)
     
-    l_b, r_b = "", ""
-    if use_c1 and len(bracket_str) >= 2:
-        half = len(bracket_str) // 2
-        l_b, r_b = bracket_str[:half], bracket_str[half:]
+    regex_pat = bracket_str.strip() if use_c1 else ""
         
     def ass_to_srt_time(ass_time):
         h, m, s_ms = ass_time.strip().split(':')
@@ -1191,7 +1197,7 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
                     txt = parts[9]
                     
                     # 接入全局高级判定求值器
-                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles)
                     
                     if is_screen: 
                         screen_ev.append(ev)
@@ -1231,11 +1237,8 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
     if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
     os.makedirs(out_dir, exist_ok=True)
     
-    l_b, r_b = "", ""
-    if use_c1 and len(bracket_str) >= 2:
-        half = len(bracket_str) // 2
-        l_b, r_b = bracket_str[:half], bracket_str[half:]
-
+    regex_pat = bracket_str.strip() if use_c1 else ""
+    
     def ass_time_to_ms(time_str):
         parts = time_str.strip().split(':')
         h = int(parts[0])
@@ -1267,7 +1270,7 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
             if ev.startswith('Dialogue:'):
                 parts = ev.split(',', 9)
                 if len(parts) >= 10:
-                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles)
                     
                     st_ms = ass_time_to_ms(parts[1])
                     ed_ms = ass_time_to_ms(parts[2])
@@ -1880,7 +1883,7 @@ tab_time_op = create_scrollable_tab(nb_srt, " 时间轴操作 ", padding=20)
 tab_time_op.columnconfigure(1, weight=1)
 
 time_op_in_var, time_op_out_var = tk.StringVar(), tk.StringVar()
-time_op_bracket_var = tk.StringVar(value="【】")
+time_op_bracket_var = tk.StringVar(value="^\\[")
 
 ttk.Label(tab_time_op, text="ASS 输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
 ttk.Entry(tab_time_op, textvariable=time_op_in_var).grid(row=0, column=1, sticky="ew", padx=5)
@@ -2276,7 +2279,7 @@ nb_ass.add(tab_ass, text=" SRT转ASS ")
 tab_ass.columnconfigure(1, weight=1)
 
 ass_srt_var, ass_out_var = tk.StringVar(), tk.StringVar()
-ass_bracket_var = tk.StringVar(value="【】")
+ass_bracket_var = tk.StringVar(value="^\\[")
 
 ttk.Label(tab_ass, text="仅限 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
 ttk.Entry(tab_ass, textvariable=ass_srt_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
@@ -2290,9 +2293,9 @@ f_ass_txt = ttk.LabelFrame(tab_ass, text="文本处理 (画面字提取、正则
 f_ass_txt.grid(row=2, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
 f_ass_txt.columnconfigure(1, weight=1)
 
-ttk.Label(f_ass_txt, text="画面字识别符号 (一对):").grid(row=0, column=0, sticky="e", padx=(0,5))
+ttk.Label(f_ass_txt, text="画面字正则条件:").grid(row=0, column=0, sticky="e", padx=(0,5))
 ttk.Entry(f_ass_txt, textvariable=ass_bracket_var).grid(row=0, column=1, sticky="ew", padx=5)
-ttk.Label(f_ass_txt, text="例如: 【】 或 []", font=("Arial", 8)).grid(row=0, column=2, sticky="w", padx=5)
+ttk.Label(f_ass_txt, text="例如: ^\\[ (只要匹配成功，该条即全划为画面字)", font=("Arial", 8)).grid(row=0, column=2, sticky="w", padx=5)
 
 # 新增：正则替换功能的开关变量（默认设为 0，即关闭状态）
 ass_enable_regex_var = tk.IntVar(value=0)
@@ -3636,7 +3639,6 @@ def execute_ass_editor(stage_only=False):
                     parsed_blocks.append({'ID': lines[0].strip(), 'Timeline': lines[1].strip(), 'Text': "\n".join(lines[2:]).strip()})
                     
             b = f4_bracket_var.get().strip()
-            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
             logic_mode = f4_logic_var.get()
             use_c1 = f4_c1_var.get() == 1
             # 对 SRT 会在底层判定器中自动忽略后两个参数
@@ -3646,7 +3648,8 @@ def execute_ass_editor(stage_only=False):
                 p = [block['ID'], block['Timeline'], block['Text']]
                 tgt_idx = int(f4_target_col.get().split(':')[0])
                 
-                is_match = evaluate_advanced_condition("SRT", p, logic_mode, use_c1, l_b, r_b, False, sel_effs, False, sel_styles)
+                # 直接传入正则规则 b
+                is_match = evaluate_advanced_condition("SRT", p, logic_mode, use_c1, b, False, sel_effs, False, sel_styles)
                     
                 if is_match:
                     orig_tgt = p[tgt_idx]
@@ -3761,10 +3764,9 @@ def execute_ass_editor(stage_only=False):
                 if not rep: s_lines.append(new_line)
                 
         # ====== 功能1 ======
+        # ====== 功能1 ======
         elif mode == 1:
             b = edit_m2_bracket.get().strip()
-            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
-            
             logic_mode = m2_logic_var.get()
             use_c1 = m2_c1_var.get() == 1
             use_c2 = m2_c2_var.get() == 1
@@ -3804,7 +3806,8 @@ def execute_ass_editor(stage_only=False):
             for ev in ev_lines:
                 parts = ev.split(',', 9)
                 if len(parts) >= 10 and ev.strip().startswith('Dialogue:'):
-                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                    # 直接传入正则规则 b
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles)
                     if is_screen: parts[3] = s_name
                     else: parts[3] = n_name
                     new_ev.append(",".join(parts))
@@ -3869,7 +3872,6 @@ def execute_ass_editor(stage_only=False):
         # ====== 功能3 (批量/条件正则替换 - ASS处理) ======
         elif mode == 3:
             b = f4_bracket_var.get().strip()
-            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
             logic_mode = f4_logic_var.get()
             use_c1 = f4_c1_var.get() == 1
             use_c2 = f4_c2_var.get() == 1
@@ -3887,7 +3889,8 @@ def execute_ass_editor(stage_only=False):
                 if ev.startswith('Dialogue:'):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
-                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                        # 直接传入正则规则 b
+                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles)
                         
                         if is_match:
                             orig_tgt = p[tgt_idx]
@@ -3956,7 +3959,6 @@ def execute_ass_editor(stage_only=False):
         # ====== 功能5: 条件定位替换样式 ======
         elif mode == 5:
             b = f8_bracket_var.get().strip()
-            l_b, r_b = b[:len(b)//2] if len(b)>=2 else "", b[len(b)//2:] if len(b)>=2 else ""
             logic_mode = f8_logic_var.get()
             use_c1 = f8_c1_var.get() == 1
             use_c2 = f8_c2_var.get() == 1
@@ -3989,7 +3991,8 @@ def execute_ass_editor(stage_only=False):
                 if ev.startswith('Dialogue:'):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
-                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, l_b, r_b, use_c2, sel_effs, use_c3, sel_styles)
+                        # 直接传入正则规则 b
+                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles)
                             
                         if is_match:
                             p[3] = new_style_name
