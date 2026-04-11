@@ -920,8 +920,11 @@ def scan_all_styles_from_ass(filepath):
 def process_ass_editor(input_dir, out_dir, mode_cfg):
     pass # Reserved, actual logic integrated into execute_ass_editor
 
-def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str):
-    col_idx = int(col_str.split(':')[0])
+def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, sel_blocks=None):
+    is_header = col_str.startswith("Header")
+    if not is_header:
+        col_idx = int(col_str.split(':')[0])
+        
     ext = '.srt' if fmt == 'SRT' else '.ass'
     tgt_files = [f for f in os.listdir(tgt_dir) if f.lower().endswith(ext)]
     if not tgt_files: raise ValueError(f"待接收数据的目标文件夹中没有 {ext} 文件！")
@@ -971,41 +974,96 @@ def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str):
             with open(src_file, 'r', encoding='utf-8-sig') as f: src_lines = f.read().split('\n')
             with open(tgt_file, 'r', encoding='utf-8-sig') as f: tgt_lines = f.read().split('\n')
 
-            src_diags = [l for l in src_lines if l.strip().startswith('Dialogue:')]
-            out_lines = []
-            diag_idx = 0
-            
-            tgt_diags_count = len([l for l in tgt_lines if l.strip().startswith('Dialogue:')])
-            if len(src_diags) != tgt_diags_count:
-                all_errors.append({'文件名': file, '目标行号/时间轴': 'N/A', '目标文本': 'N/A', '错误说明': f"Dialogue行数不一致! 源:{len(src_diags)}行, 目标:{tgt_diags_count}行"})
+            if is_header:
+                def parse_blocks(lines):
+                    order = []
+                    blocks = {}
+                    curr = ""
+                    for l in lines:
+                        s = l.strip()
+                        if s.startswith('[') and s.endswith(']'):
+                            curr = s
+                            if curr not in order: order.append(curr)
+                        if curr not in blocks: blocks[curr] = []
+                        blocks[curr].append(l)
+                    return order, blocks
 
-            for line in tgt_lines:
-                if line.strip().startswith('Dialogue:'):
-                    t_p = line.split(',', 9)
-                    if len(t_p) >= 10:
-                        if diag_idx < len(src_diags):
-                            s_line = src_diags[diag_idx]
-                            s_p = s_line.split(',', 9)
-                            if len(s_p) >= 10:
-                                t_time = f"{t_p[1]} --> {t_p[2]}"
-                                s_time = f"{s_p[1]} --> {s_p[2]}"
-                                if t_time != s_time:
-                                    all_errors.append({'文件名': file, '目标行号/时间轴': f"第{diag_idx+1}条 {t_time}", '目标文本': t_p[9], '错误说明': f"时间轴不一致! 源时间轴为 {s_time}"})
-                                
-                                if col_idx < len(t_p) and col_idx < len(s_p):
-                                    t_p[col_idx] = s_p[col_idx] # 粗暴覆盖指定列
-                                    line = ",".join(t_p)
-                        else:
-                            all_errors.append({'文件名': file, '目标行号/时间轴': f"第{diag_idx+1}条", '目标文本': t_p[9] if len(t_p)>9 else 'N/A', '错误说明': '源文件在此行缺失，无法复制'})
-                    out_lines.append(line)
-                    diag_idx += 1
+                src_order, src_blocks = parse_blocks(src_lines)
+                tgt_order, tgt_blocks = parse_blocks(tgt_lines)
+                
+                out_lines = []
+                
+                if not sel_blocks:
+                    # 全量替换文件头：用源文件的头，加上目标文件的 [Events]
+                    for b in src_order:
+                        if b != '[Events]':
+                            out_lines.extend(src_blocks[b])
+                    if '[Events]' in tgt_blocks:
+                        out_lines.extend(tgt_blocks['[Events]'])
                 else:
-                    out_lines.append(line)
+                    # 按指定块替换
+                    replaced = set()
+                    for b in tgt_order:
+                        if b == '[Events]':
+                            continue
+                        if b in sel_blocks:
+                            if b in src_blocks:
+                                out_lines.extend(src_blocks[b])
+                                replaced.add(b)
+                            else:
+                                out_lines.extend(tgt_blocks[b])
+                        else:
+                            out_lines.extend(tgt_blocks[b])
+                            
+                    # 如果有源文件中存在但目标文件原来没有的块，追加在 Events 之前
+                    for b in sel_blocks:
+                        if b not in replaced and b in src_blocks and b != '[Events]':
+                            out_lines.extend(src_blocks[b])
+                            
+                    if '[Events]' in tgt_blocks:
+                        out_lines.extend(tgt_blocks['[Events]'])
+                
+                with open(out_file, 'w', encoding='utf-8') as f: f.write("\n".join(out_lines))
+                processed_count += 1
 
-            with open(out_file, 'w', encoding='utf-8') as f: f.write("\n".join(out_lines))
-            processed_count += 1
+            else:
+                # 原有的按列复制逻辑
+                src_diags = [l for l in src_lines if l.strip().startswith('Dialogue:')]
+                out_lines = []
+                diag_idx = 0
+                
+                tgt_diags_count = len([l for l in tgt_lines if l.strip().startswith('Dialogue:')])
+                if len(src_diags) != tgt_diags_count:
+                    all_errors.append({'文件名': file, '目标行号/时间轴': 'N/A', '目标文本': 'N/A', '错误说明': f"Dialogue行数不一致! 源:{len(src_diags)}行, 目标:{tgt_diags_count}行"})
 
-    if all_errors and err_rep: pd.DataFrame(all_errors).to_excel(err_rep, index=False)
+                for line in tgt_lines:
+                    if line.strip().startswith('Dialogue:'):
+                        t_p = line.split(',', 9)
+                        if len(t_p) >= 10:
+                            if diag_idx < len(src_diags):
+                                s_line = src_diags[diag_idx]
+                                s_p = s_line.split(',', 9)
+                                if len(s_p) >= 10:
+                                    t_time = f"{t_p[1]} --> {t_p[2]}"
+                                    s_time = f"{s_p[1]} --> {s_p[2]}"
+                                    if t_time != s_time:
+                                        all_errors.append({'文件名': file, '目标行号/时间轴': f"第{diag_idx+1}条 {t_time}", '目标文本': t_p[9], '错误说明': f"时间轴不一致! 源时间轴为 {s_time}"})
+                                    
+                                    if col_idx < len(t_p) and col_idx < len(s_p):
+                                        t_p[col_idx] = s_p[col_idx] # 粗暴覆盖指定列
+                                        line = ",".join(t_p)
+                            else:
+                                all_errors.append({'文件名': file, '目标行号/时间轴': f"第{diag_idx+1}条", '目标文本': t_p[9] if len(t_p)>9 else 'N/A', '错误说明': '源文件在此行缺失，无法复制'})
+                        out_lines.append(line)
+                        diag_idx += 1
+                    else:
+                        out_lines.append(line)
+
+                with open(out_file, 'w', encoding='utf-8') as f: f.write("\n".join(out_lines))
+                processed_count += 1
+
+    # 新增判定：只有非文件头替换模式下，才输出行匹配异常报告
+    if all_errors and err_rep and not is_header: pd.DataFrame(all_errors).to_excel(err_rep, index=False)
     return processed_count, len(all_errors)
 
 def process_srt_bilingual_split_batch(in_dir, out_dir, suffix1, suffix2):
@@ -1517,10 +1575,19 @@ def run_column_copy():
     fmt, col_str = eff_fmt_var.get(), eff_col_var.get()
     
     if not src_dir or not tgt_dir or not out_dir: return messagebox.showwarning("警告", "请完整选择目录！")
+    
+    sel_blocks = []
+    if fmt == "ASS" and col_str.startswith("Header"):
+        sel_blocks = [lb_eff_headers.get(i) for i in lb_eff_headers.curselection()]
+        
     try:
-        processed_count, err_count = process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str)
-        if err_count > 0: messagebox.showwarning("部分完成", f"成功提取 {processed_count} 个文件！但检测到 {err_count} 处异常(行数缺失或时间轴错位)，已忽略时间轴强行复用并导出报告。")
-        else: messagebox.showinfo("完成", f"完美处理 {processed_count} 个文件！所选列已严格按行数映射全部复制成功。")
+        processed_count, err_count = process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, sel_blocks)
+        
+        if col_str.startswith("Header"):
+            messagebox.showinfo("完成", f"完美处理 {processed_count} 个文件！所选文件头区块已成功同步覆盖。")
+        else:
+            if err_count > 0: messagebox.showwarning("部分完成", f"成功提取 {processed_count} 个文件！但检测到 {err_count} 处异常(行数缺失或时间轴错位)，已忽略时间轴强行复用并导出报告。")
+            else: messagebox.showinfo("完成", f"完美处理 {processed_count} 个文件！所选列已严格按行数映射全部复制成功。")
     except Exception as e: messagebox.showerror("错误", f"处理失败:\n{str(e)}")
 
 def run_srt_bilingual_split():
@@ -4122,44 +4189,89 @@ tab_eff.columnconfigure(1, weight=1)
 eff_fmt_var = tk.StringVar(value="ASS")
 eff_col_var = tk.StringVar(value=ASS_COLS[8])
 
-def update_eff_cols():
+def update_eff_cols(*args):
     if eff_fmt_var.get() == "ASS":
-        cb_eff_col['values'] = ASS_COLS
-        eff_col_var.set(ASS_COLS[8])
+        cb_eff_col['values'] = ASS_COLS + ["Header: 文件头(包含样式/信息等)"]
+        if eff_col_var.get() not in cb_eff_col['values']:
+            eff_col_var.set(ASS_COLS[8])
     else:
         cb_eff_col['values'] = SRT_COLS
-        eff_col_var.set(SRT_COLS[2])
+        if eff_col_var.get() not in SRT_COLS:
+            eff_col_var.set(SRT_COLS[2])
+            
+    if eff_col_var.get().startswith("Header"):
+        f_eff_header.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 5))
+    else:
+        f_eff_header.grid_remove()
+
+eff_col_var.trace_add("write", update_eff_cols)
 
 f_eff_top = ttk.Frame(tab_eff)
 f_eff_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
 ttk.Radiobutton(f_eff_top, text="处理 ASS 格式", variable=eff_fmt_var, value="ASS", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
 ttk.Radiobutton(f_eff_top, text="处理 SRT 格式", variable=eff_fmt_var, value="SRT", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
 
-ttk.Label(f_eff_top, text="需要复用覆盖的列:").pack(side=tk.LEFT, padx=(20, 5))
-cb_eff_col = ttk.Combobox(f_eff_top, textvariable=eff_col_var, values=ASS_COLS, width=15, state="readonly")
+ttk.Label(f_eff_top, text="需要复用同步的项:").pack(side=tk.LEFT, padx=(20, 5))
+cb_eff_col = ttk.Combobox(f_eff_top, textvariable=eff_col_var, values=ASS_COLS, width=25, state="readonly")
 cb_eff_col.pack(side=tk.LEFT)
+
+# --- 新增：文件头替换子选项面板 ---
+f_eff_header = ttk.LabelFrame(tab_eff, text="文件头同步子选项 (提取前需扫描源文件夹)", padding=10)
+
+def scan_eff_headers():
+    d = eff_src_var.get().strip()
+    if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在下方选择【提供数据的源文件夹】！")
+    files = [f for f in os.listdir(d) if f.lower().endswith('.ass')]
+    if not files: return messagebox.showwarning("提示", "源文件夹中没有 .ass 文件！")
+    
+    headers = set()
+    for f in files:
+        try:
+            with open(os.path.join(d, f), 'r', encoding='utf-8-sig') as fp:
+                for line in fp:
+                    l = line.strip()
+                    if l.startswith('[') and l.endswith(']') and l != '[Events]':
+                        headers.add(l)
+        except: continue
+    lb_eff_headers.delete(0, tk.END)
+    for h in sorted(list(headers)): lb_eff_headers.insert(tk.END, h)
+    messagebox.showinfo("成功", f"扫描完毕！共发现 {len(headers)} 种文件头区块。")
+    
+ttk.Button(f_eff_header, text="🔍 扫描源文件夹文件头", command=scan_eff_headers).pack(anchor="w", pady=(0, 5))
+ttk.Label(f_eff_header, text="选择需要覆盖同步的文件头区块 (支持按住Ctrl多选，都不选则默认全量覆盖整个文件头):").pack(anchor="w")
+
+f_eff_header_lb = ttk.Frame(f_eff_header)
+f_eff_header_lb.pack(fill=tk.X, expand=True, pady=5)
+lb_eff_headers = tk.Listbox(f_eff_header_lb, selectmode=tk.MULTIPLE, height=4, exportselection=False)
+lb_eff_headers.pack(side=tk.LEFT, fill=tk.X, expand=True)
+sb_eff_h = ttk.Scrollbar(f_eff_header_lb, command=lb_eff_headers.yview)
+sb_eff_h.pack(side=tk.LEFT, fill=tk.Y)
+lb_eff_headers.config(yscrollcommand=sb_eff_h.set)
+# -------------------------------
 
 eff_src_var, eff_tgt_var = tk.StringVar(), tk.StringVar()
 eff_out_var, eff_err_var = tk.StringVar(), tk.StringVar()
 
-ttk.Label(tab_eff, text="提供数据的源文件夹:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_src_var).grid(row=1, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_src_var, "选择源文件夹")).grid(row=1, column=2, padx=5)
+ttk.Label(tab_eff, text="提供数据的源文件夹:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_src_var).grid(row=2, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_src_var, "选择源文件夹")).grid(row=2, column=2, padx=5)
 
-ttk.Label(tab_eff, text="待接收数据的目标文件夹:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_tgt_var).grid(row=2, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_tgt_var, "选择目标文件夹")).grid(row=2, column=2, padx=5)
+ttk.Label(tab_eff, text="待接收数据的目标文件夹:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_tgt_var).grid(row=3, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_tgt_var, "选择目标文件夹")).grid(row=3, column=2, padx=5)
 
-ttk.Label(tab_eff, text="合成后的新文件输出至:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_out_var).grid(row=3, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_out_var, "选择输出文件夹")).grid(row=3, column=2, padx=5)
+ttk.Label(tab_eff, text="合成后的新文件输出至:").grid(row=4, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_out_var).grid(row=4, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_out_var, "选择输出文件夹")).grid(row=4, column=2, padx=5)
 
-ttk.Label(tab_eff, text="行列不匹配报错报告保存至:").grid(row=4, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_err_var).grid(row=4, column=1, sticky="ew", padx=5)
-ttk.Button(tab_eff, text="浏览...", command=lambda: ask_save_file(eff_err_var, "保存报错报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=4, column=2, padx=5)
+ttk.Label(tab_eff, text="行列不匹配报错报告保存至:").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_eff, textvariable=eff_err_var).grid(row=5, column=1, sticky="ew", padx=5)
+ttk.Button(tab_eff, text="浏览...", command=lambda: ask_save_file(eff_err_var, "保存报错报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=5, column=2, padx=5)
 
-ttk.Label(tab_eff, text="* 注：将基于【文件同名】和【行数顺序】进行精准的一对一覆盖提取。如果时间轴错位会记录在报告中", foreground="gray").grid(row=5, column=0, columnspan=3, pady=(0,10))
-ttk.Button(tab_eff, text="执行指定列批量复制", command=run_column_copy, style='TButton').grid(row=6, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+ttk.Label(tab_eff, text="* 注：将基于【文件同名】提取。指定列模式按行数复用，文件头模式按区块名复用。", foreground="gray").grid(row=6, column=0, columnspan=3, pady=(0,10))
+ttk.Button(tab_eff, text="执行批量同步", command=run_column_copy, style='TButton').grid(row=7, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+
+update_eff_cols() # 初始化面板状态
 
 # ================= TAB 10: ASS 拆分 (画面字/普通字) =================
 tab_ass_split = ttk.Frame(nb_ass, padding=10)
