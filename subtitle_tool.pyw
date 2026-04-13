@@ -4264,11 +4264,11 @@ ttk.Label(tab_eff, text="合成后的新文件输出至:").grid(row=4, column=0,
 ttk.Entry(tab_eff, textvariable=eff_out_var).grid(row=4, column=1, sticky="ew", padx=5)
 ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_out_var, "选择输出文件夹")).grid(row=4, column=2, padx=5)
 
-ttk.Label(tab_eff, text="行列不匹配报错报告保存至:").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Label(tab_eff, text="报告保存至:").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
 ttk.Entry(tab_eff, textvariable=eff_err_var).grid(row=5, column=1, sticky="ew", padx=5)
 ttk.Button(tab_eff, text="浏览...", command=lambda: ask_save_file(eff_err_var, "保存报错报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=5, column=2, padx=5)
 
-ttk.Label(tab_eff, text="* 注：将基于【文件同名】提取。指定列模式按行数复用，文件头模式按区块名复用。", foreground="gray").grid(row=6, column=0, columnspan=3, pady=(0,10))
+ttk.Label(tab_eff, text="* 注：将基于【文件同名】提取。指定列模式按行数复用，文件头模式按区块名复用\n如果复用时间轴，时间轴报错请忽略，按行数复用", foreground="gray").grid(row=6, column=0, columnspan=3, pady=(0,10))
 ttk.Button(tab_eff, text="执行批量同步", command=run_column_copy, style='TButton').grid(row=7, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 
 update_eff_cols() # 初始化面板状态
