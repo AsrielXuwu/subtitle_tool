@@ -9,6 +9,16 @@ import zipfile
 import math
 import platform
 
+# ======= 新增：用于术语检查报告的富文本导出 =======
+try:
+    import openpyxl
+    from openpyxl.cell.text import InlineFont
+    from openpyxl.cell.rich_text import TextBlock, CellRichText
+    RICH_TEXT_SUPPORTED = True
+except ImportError:
+    RICH_TEXT_SUPPORTED = False
+# ==================================================
+
 # ======= 新增：尝试引入视频帧提取与渲染库 =======
 try:
     import cv2
@@ -1708,6 +1718,27 @@ def ask_file(var, title, filetypes): var.set(filedialog.askopenfilename(title=ti
 def ask_dir(var, title): var.set(filedialog.askdirectory(title=title))
 def ask_save_file(var, title, filetypes, defaultextension): var.set(filedialog.asksaveasfilename(title=title, filetypes=filetypes, defaultextension=defaultextension))
 
+
+def switch_category():
+    cat = category_var.get()
+    nb_srt.pack_forget()
+    nb_ass.pack_forget()
+    nb_other.pack_forget()
+    
+    if cat == "SRT": nb_srt.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    elif cat == "ASS": nb_ass.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    else: nb_other.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+def scan_sheets():
+    f = split_in_var.get().strip()
+    if not f or not os.path.exists(f): return messagebox.showwarning("警告", "请先选择有效的Excel文件！")
+    try:
+        xl = pd.ExcelFile(f)
+        cb_sheet['values'] = xl.sheet_names
+        if xl.sheet_names: split_sheet_var.set(xl.sheet_names[0])
+        messagebox.showinfo("成功", f"扫描到 {len(xl.sheet_names)} 个 Sheet")
+    except Exception as e: messagebox.showerror("错误", str(e))
+
 # ================= GUI 界面构建 =================
 
 root = tk.Tk()
@@ -1741,16 +1772,6 @@ nav_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
 
 category_var = tk.StringVar(value="SRT")
 
-def switch_category():
-    cat = category_var.get()
-    nb_srt.pack_forget()
-    nb_ass.pack_forget()
-    nb_other.pack_forget()
-    
-    if cat == "SRT": nb_srt.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    elif cat == "ASS": nb_ass.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    else: nb_other.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
 ttk.Radiobutton(nav_frame, text=" 📝 基本功能 ", variable=category_var, value="SRT", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=(0, 5), ipadx=10, ipady=3)
 ttk.Radiobutton(nav_frame, text=" 🎬 高级功能 ", variable=category_var, value="ASS", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=5, ipadx=10, ipady=3)
 ttk.Radiobutton(nav_frame, text=" 🛠️ 其他功能 ", variable=category_var, value="OTHER", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=5, ipadx=10, ipady=3)
@@ -1777,15 +1798,6 @@ f_mode.grid(row=0, column=0, columnspan=3, sticky="w", pady=5)
 ttk.Radiobutton(f_mode, text="模式1: 番茄导出格式", variable=split_mode_var, value=1, command=lambda: update_split_mode()).pack(side=tk.LEFT, padx=5)
 ttk.Radiobutton(f_mode, text="模式2: CPP格式", variable=split_mode_var, value=2, command=lambda: update_split_mode()).pack(side=tk.LEFT, padx=5)
 
-def scan_sheets():
-    f = split_in_var.get().strip()
-    if not f or not os.path.exists(f): return messagebox.showwarning("警告", "请先选择有效的Excel文件！")
-    try:
-        xl = pd.ExcelFile(f)
-        cb_sheet['values'] = xl.sheet_names
-        if xl.sheet_names: split_sheet_var.set(xl.sheet_names[0])
-        messagebox.showinfo("成功", f"扫描到 {len(xl.sheet_names)} 个 Sheet")
-    except Exception as e: messagebox.showerror("错误", str(e))
 
 btn_scan_sheet = ttk.Button(f_mode, text="扫描Sheet", command=scan_sheets, state="disabled")
 btn_scan_sheet.pack(side=tk.LEFT, padx=5)
@@ -2088,6 +2100,8 @@ ttk.Label(tab_zip, text="ZIP 输出文件夹:").grid(row=2, column=0, sticky="e"
 ttk.Entry(tab_zip, textvariable=zip_out_var).grid(row=2, column=1, sticky="ew", padx=5, pady=20)
 ttk.Button(tab_zip, text="浏览...", command=lambda: ask_dir(zip_out_var, "选择")).grid(row=2, column=2, padx=(5,0), pady=20)
 ttk.Button(tab_zip, text="开始打包", command=run_zip, style='TButton').grid(row=4, column=0, columnspan=3, pady=25, ipadx=20, ipady=5)
+
+
 
 def build_style_tab(parent, font_v, size_v, col_v, ocol_v, mv_v, mlr_v, out_v, align_v, shad_v, bold_v, ita_v, alpha_v=None, oalpha_v=None):
     container = ttk.Frame(parent)
@@ -4204,20 +4218,6 @@ def update_eff_cols(*args):
     else:
         f_eff_header.grid_remove()
 
-eff_col_var.trace_add("write", update_eff_cols)
-
-f_eff_top = ttk.Frame(tab_eff)
-f_eff_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
-ttk.Radiobutton(f_eff_top, text="处理 ASS 格式", variable=eff_fmt_var, value="ASS", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
-ttk.Radiobutton(f_eff_top, text="处理 SRT 格式", variable=eff_fmt_var, value="SRT", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
-
-ttk.Label(f_eff_top, text="需要复用同步的项:").pack(side=tk.LEFT, padx=(20, 5))
-cb_eff_col = ttk.Combobox(f_eff_top, textvariable=eff_col_var, values=ASS_COLS, width=25, state="readonly")
-cb_eff_col.pack(side=tk.LEFT)
-
-# --- 新增：文件头替换子选项面板 ---
-f_eff_header = ttk.LabelFrame(tab_eff, text="文件头同步子选项 (提取前需扫描源文件夹)", padding=10)
-
 def scan_eff_headers():
     d = eff_src_var.get().strip()
     if not d or not os.path.exists(d): return messagebox.showwarning("提示", "请先在下方选择【提供数据的源文件夹】！")
@@ -4236,7 +4236,36 @@ def scan_eff_headers():
     lb_eff_headers.delete(0, tk.END)
     for h in sorted(list(headers)): lb_eff_headers.insert(tk.END, h)
     messagebox.showinfo("成功", f"扫描完毕！共发现 {len(headers)} 种文件头区块。")
+
+def run_scan_ext():
+    f = ext_file_var.get().strip()
+    if not os.path.exists(f): return messagebox.showwarning("错误", "文件不存在")
+    s = scan_ass_for_styles(f)
+    rx, ry = get_ass_resolution(f)
+    ext_res_cache["x"] = rx
+    ext_res_cache["y"] = ry
     
+    ext_styles_cache.clear()
+    ext_styles_cache.update(s)
+    k = list(s.keys())
+    cb_ext_style['values'] = k
+    if k: ext_style_var.set(k[0])
+    messagebox.showinfo("成功", f"扫描到 {len(k)} 个样式\n自动获取到视频分辨率: {rx} x {ry}")
+
+eff_col_var.trace_add("write", update_eff_cols)
+
+f_eff_top = ttk.Frame(tab_eff)
+f_eff_top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 10))
+ttk.Radiobutton(f_eff_top, text="处理 ASS 格式", variable=eff_fmt_var, value="ASS", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f_eff_top, text="处理 SRT 格式", variable=eff_fmt_var, value="SRT", command=update_eff_cols).pack(side=tk.LEFT, padx=5)
+
+ttk.Label(f_eff_top, text="需要复用同步的项:").pack(side=tk.LEFT, padx=(20, 5))
+cb_eff_col = ttk.Combobox(f_eff_top, textvariable=eff_col_var, values=ASS_COLS, width=25, state="readonly")
+cb_eff_col.pack(side=tk.LEFT)
+
+# --- 新增：文件头替换子选项面板 ---
+f_eff_header = ttk.LabelFrame(tab_eff, text="文件头同步子选项 (提取前需扫描源文件夹)", padding=10)
+
 ttk.Button(f_eff_header, text="🔍 扫描源文件夹文件头", command=scan_eff_headers).pack(anchor="w", pady=(0, 5))
 ttk.Label(f_eff_header, text="选择需要覆盖同步的文件头区块 (支持按住Ctrl多选，都不选则默认全量覆盖整个文件头):").pack(anchor="w")
 
@@ -4320,21 +4349,6 @@ ttk.Label(tab_ext, text="选择用于提取的 ASS 文件:").grid(row=0, column=
 ttk.Entry(tab_ext, textvariable=ext_file_var, width=40).grid(row=0, column=1, sticky="w", padx=5)
 ttk.Button(tab_ext, text="浏览...", command=lambda: ask_file(ext_file_var, "选择ASS", [("ASS","*.ass")])).grid(row=0, column=2, padx=5)
 
-def run_scan_ext():
-    f = ext_file_var.get().strip()
-    if not os.path.exists(f): return messagebox.showwarning("错误", "文件不存在")
-    s = scan_ass_for_styles(f)
-    rx, ry = get_ass_resolution(f)
-    ext_res_cache["x"] = rx
-    ext_res_cache["y"] = ry
-    
-    ext_styles_cache.clear()
-    ext_styles_cache.update(s)
-    k = list(s.keys())
-    cb_ext_style['values'] = k
-    if k: ext_style_var.set(k[0])
-    messagebox.showinfo("成功", f"扫描到 {len(k)} 个样式\n自动获取到视频分辨率: {rx} x {ry}")
-
 ttk.Button(tab_ext, text="🔍 扫描样式", command=run_scan_ext).grid(row=0, column=3, padx=5)
 
 ttk.Label(tab_ext, text="选择要提取的样式:").grid(row=1, column=0, sticky="e", pady=10)
@@ -4396,6 +4410,39 @@ def save_ext_preset():
 
 ttk.Button(tab_ext, text="💾 提取并保存为全局 ASS 预设", command=save_ext_preset, style='TButton').grid(row=3, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
 
+
+def run_xlsx_merge():
+    in_dir = ext_merge_in_var.get().strip()
+    out_file = ext_merge_out_var.get().strip()
+    if not in_dir or not out_file:
+        return messagebox.showwarning("警告", "请完整选择输入文件夹和输出文件路径！")
+    try:
+        # 获取所有 xlsx 文件，并自动忽略打开时产生的临时隐藏文件(~$开头)
+        files = [f for f in os.listdir(in_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')]
+        if not files:
+            return messagebox.showwarning("警告", "输入文件夹中没有找到有效的 .xlsx 文件！")
+        
+        # 按文件名排序，确保合并顺序稳定
+        files.sort()
+        
+        dfs = []
+        for i, f in enumerate(files):
+            fp = os.path.join(in_dir, f)
+            # 读取时不设表头，纯粹当作数据读取
+            df = pd.read_excel(fp, header=None)
+            if i == 0:
+                dfs.append(df) # 第一个文件：保留所有行
+            else:
+                dfs.append(df.iloc[1:]) # 其余文件：砍掉第一行
+        
+        merged_df = pd.concat(dfs, ignore_index=True)
+        merged_df.to_excel(out_file, index=False, header=False)
+        messagebox.showinfo("完成", f"合并成功！\n共完美拼接了 {len(files)} 个 XLSX 文件。")
+    except Exception as e:
+        messagebox.showerror("错误", f"合并失败:\n{str(e)}")
+
+
+
 root.update_idletasks()
 try:
     fonts = list(tkfont.families())
@@ -4418,6 +4465,391 @@ try:
     cb_m8['values'] = fonts
     cb_m8_ref_font['values'] = fonts
 except: pass
+
+def run_term_check():
+    s_dir = tc_src_dir.get().strip()
+    t_dir = tc_tgt_dir.get().strip()
+    tb_file = tc_tb_path.get().strip()
+    out_file = tc_out_path.get().strip()
+    scol, tcol = tc_src_col.get().strip(), tc_tgt_col.get().strip()
+    
+    if not all([s_dir, t_dir, tb_file, out_file, scol, tcol]):
+        return messagebox.showwarning("警告", "请填写完整的输入、输出路径及列名！")
+        
+    try:
+        # 1. 加载术语表
+        if tb_file.lower().endswith('.csv'): tb_df = pd.read_csv(tb_file)
+        else: tb_df = pd.read_excel(tb_file)
+        
+        use_opt3 = tc_partial_match.get() == 1
+        col_cat = tc_cat_col.get().strip()
+        sel_cats = [lb_tc_cats.get(i) for i in lb_tc_cats.curselection()]
+
+        if scol not in tb_df.columns or tcol not in tb_df.columns:
+            return messagebox.showerror("错误", f"术语表中找不到指定的列名：'{scol}' 或 '{tcol}'")
+        if use_opt3 and col_cat and col_cat not in tb_df.columns:
+            return messagebox.showerror("错误", f"术语表中找不到分类列：'{col_cat}'\n请确认列名是否正确！")
+            
+        tb_df[scol] = tb_df[scol].astype(object).fillna('')
+        tb_df[tcol] = tb_df[tcol].astype(object).fillna('')
+        if use_opt3 and col_cat: tb_df[col_cat] = tb_df[col_cat].astype(object).fillna('')
+        
+        # 数据结构升级：存储目标翻译的同时，记录该术语拥有的所有分类
+        term_dict = {}
+        for _, row in tb_df.iterrows():
+            st, tt = str(row[scol]).strip(), str(row[tcol]).strip()
+            cat = str(row[col_cat]).strip() if use_opt3 and col_cat else ""
+            if st and tt and st.lower() not in ['nan', 'none'] and tt.lower() not in ['nan', 'none']:
+                if st not in term_dict: term_dict[st] = {'targets': set(), 'cats': set()}
+                term_dict[st]['targets'].add(tt)
+                if cat: term_dict[st]['cats'].add(cat)
+                
+        if not term_dict: return messagebox.showwarning("警告", "术语表为空或未提取到有效术语！")
+
+        # 参数预备
+        mode = tc_match_mode.get()
+        c_range = tc_ctx_range.get()
+        strict_mode = tc_strict_ctx.get() == 1
+        ctx_regex_pat = tc_strict_syms.get().strip()
+        ign_case = tc_ign_case.get() == 1
+        ign_count = tc_ign_count.get() == 1
+        flags = re.IGNORECASE if ign_case else 0
+        
+        files = [f for f in os.listdir(s_dir) if f.lower().endswith('.srt')]
+        if not files: return messagebox.showwarning("警告", "源语言文件夹中没有 .srt 文件！")
+        
+        # 准备富文本生成器
+        red_font = InlineFont(color='FFFF0000') if RICH_TEXT_SUPPORTED else None
+        black_font = InlineFont(color='FF000000') if RICH_TEXT_SUPPORTED else None # 新增：黑色默认字体阻断溢出
+        
+        def build_rich_text(text, terms_to_highlight):
+            if not RICH_TEXT_SUPPORTED or not text or not terms_to_highlight: return text
+            sorted_terms = sorted(list(terms_to_highlight), key=len, reverse=True)
+            pattern = '|'.join([re.escape(t) for t in sorted_terms])
+            rich_elements = []
+            last_idx = 0
+            for m in re.finditer(pattern, text, flags):
+                start, end = m.span()
+                if start > last_idx: 
+                    # 修复颜色溢出：给普通文本强制加上黑色装甲
+                    rich_elements.append(TextBlock(black_font, text[last_idx:start]))
+                rich_elements.append(TextBlock(red_font, text[start:end]))
+                last_idx = end
+                
+            if last_idx < len(text): 
+                rich_elements.append(TextBlock(black_font, text[last_idx:]))
+            
+            if not rich_elements: return text
+            return CellRichText(*rich_elements)
+
+        if not RICH_TEXT_SUPPORTED: messagebox.showinfo("提示", "当前环境中未检测到支持富文本的 openpyxl 版本，报告将以纯文本形式输出。")
+
+        wb = openpyxl.Workbook() if RICH_TEXT_SUPPORTED else None
+        ws = wb.active if wb else None
+        if ws: ws.append(["文件名", "字幕id", "时间轴", "源语言字幕内容", "目标语言字幕内容", "该行目标语言字幕的上下文内容", "报错信息"])
+        report_data_fallback = [] 
+
+        error_total = 0
+        
+        for file in files:
+            sf_path = os.path.join(s_dir, file)
+            tf_path = os.path.join(t_dir, file)
+            
+            if not os.path.exists(tf_path):
+                row = [file, "N/A", "N/A", "N/A", "N/A", "N/A", "目标语言文件夹中缺失同名文件"]
+                if ws: ws.append(row)
+                else: report_data_fallback.append(row)
+                error_total += 1
+                continue
+                
+            src_blocks = parse_srt_file(sf_path)
+            tgt_blocks = parse_srt_file(tf_path)
+            
+            for i in range(max(len(src_blocks), len(tgt_blocks))):
+                if i >= len(src_blocks): continue
+                sb = src_blocks[i]
+                if i >= len(tgt_blocks):
+                    row = [file, sb['ID'], sb['Timeline'], sb['Text'], "N/A", "N/A", "目标语言字幕缺失对应行"]
+                    if ws: ws.append(row)
+                    else: report_data_fallback.append(row)
+                    error_total += 1
+                    continue
+                    
+                tb = tgt_blocks[i]
+                
+                # ====== 新增：彻底清洗非法 XML 控制字符的消毒函数 ======
+                def clean_xml(txt):
+                    # 过滤掉会导致 Excel 损坏的低位控制字符，但安全保留换行(\n)、制表符(\t)、回车(\r)
+                    if not isinstance(txt, str): return ""
+                    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', txt)
+                
+                # 提前提取并清洗文本，杜绝污染
+                s_txt_clean = clean_xml(sb['Text'])
+                t_txt_clean = clean_xml(tb['Text'])
+                # =======================================================
+
+                # 1. 基础匹配验证 (增强清洗：强制剥离可能存在的 \ufeff 隐形BOM字符和多余首尾空格)
+                match_errs = []
+                s_id_clean = sb['ID'].strip('\ufeff \t\n\r')
+                t_id_clean = tb['ID'].strip('\ufeff \t\n\r')
+                
+                if s_id_clean != t_id_clean: match_errs.append("ID不一致")
+                if mode == 1 and sb['Timeline'].strip() != tb['Timeline'].strip(): match_errs.append("时间轴不一致")
+                
+                if match_errs:
+                    row = [file, s_id_clean, sb['Timeline'], s_txt_clean, t_txt_clean, "N/A", "匹配失败: " + " & ".join(match_errs)]
+                    if ws: ws.append(row)
+                    else: report_data_fallback.append(row)
+                    error_total += 1
+                    continue
+                
+                # 2. 构建上下文
+                start_idx, end_idx = i, i
+                if c_range > 0:
+                    if strict_mode and ctx_regex_pat:
+                        # 向上追溯：检查上一句的末尾是否符合连贯正则
+                        for k in range(i-1, max(-1, i-c_range-1), -1):
+                            prev_txt = clean_xml(tgt_blocks[k]['Text']).strip()
+                            try:
+                                if re.search(ctx_regex_pat, prev_txt): start_idx = k
+                                else: break
+                            except: break
+                        # 向下追溯：检查本句(及顺延句)的末尾是否符合连贯正则
+                        for k in range(i, min(len(tgt_blocks)-1, i+c_range)):
+                            curr_txt = clean_xml(tgt_blocks[k]['Text']).strip()
+                            try:
+                                if re.search(ctx_regex_pat, curr_txt): end_idx = k + 1
+                                else: break
+                            except: break
+                    else:
+                        start_idx = max(0, i - c_range)
+                        end_idx = min(len(tgt_blocks) - 1, i + c_range)
+                        
+                ctx_lines = [clean_xml(tgt_blocks[k]['Text']) for k in range(start_idx, end_idx + 1)]
+                tgt_context = "\n".join(ctx_lines)
+                
+                # 3. 终极加强版：术语检测 + 长短词屏蔽
+                s_txt, t_txt = s_txt_clean, t_txt_clean
+                found_src_terms, found_tgt_terms = set(), set()
+                line_errors = []
+                
+                # 新增：建立原文的“屏蔽遮罩”，解决长短词包含误报（例如“齐城主”优先匹配，“城主”便不再截胡）
+                s_txt_mask = s_txt
+                
+                # 按原文术语长度从长到短排序，优先让长词匹配并“消耗”原文
+                sorted_src_terms = sorted(term_dict.keys(), key=len, reverse=True)
+                
+                for src_term in sorted_src_terms:
+                    t_info = term_dict[src_term]
+                    
+                    # 在遮罩文本中查找，避免被长词消耗过的部分重复触发
+                    s_count = len(re.findall(re.escape(src_term), s_txt_mask, flags))
+                    
+                    if s_count > 0:
+                        # 命中后，将遮罩中该词对应的位置“涂黑”（替换为等长空格），防止短词重复匹配
+                        s_txt_mask = re.sub(re.escape(src_term), ' ' * len(src_term), s_txt_mask, flags=flags)
+                        
+                        found_src_terms.add(src_term)
+                        t_count = 0
+                        
+                        is_partial = use_opt3 and any(c in sel_cats for c in t_info['cats'])
+
+                        for tgt_term in t_info['targets']:
+                            if is_partial:
+                                parts = [p.strip() for p in tgt_term.split() if p.strip()]
+                                if not parts: parts = [tgt_term]
+                                parts.sort(key=len, reverse=True) 
+                                
+                                pat = "|".join(re.escape(p) for p in parts)
+                                matches = re.findall(pat, tgt_context, flags)
+                                if matches:
+                                    t_count += len(matches)
+                                    found_tgt_terms.update(matches)
+                            else:
+                                matches = re.findall(re.escape(tgt_term), tgt_context, flags)
+                                if matches:
+                                    t_count += len(matches)
+                                    found_tgt_terms.add(tgt_term)
+
+                        if t_count == 0:
+                            tgt_str = " 或 ".join(t_info['targets'])
+                            line_errors.append(f"缺失翻译: [{src_term}] (应为: {tgt_str})")
+                        elif not ign_count and t_count != s_count:
+                            tgt_str = " 或 ".join(t_info['targets'])
+                            line_errors.append(f"数量不符: [{src_term}] (应为: {tgt_str}) 源{s_count}个/译{t_count}个")
+                # 4. 如果有报错，生成带有富文本的行写入
+                if line_errors:
+                    err_str = " | ".join(line_errors)
+                    s_rich = build_rich_text(s_txt, found_src_terms)
+                    t_rich = build_rich_text(t_txt, found_tgt_terms)
+                    ctx_rich = build_rich_text(tgt_context, found_tgt_terms)
+                    
+                    row = [file, sb['ID'], sb['Timeline'], s_rich, t_rich, ctx_rich, err_str]
+                    if ws:
+                        ws.append([""] * 7) # 占位
+                        row_idx = ws.max_row
+                        for col_idx, val in enumerate(row, 1):
+                            cell = ws.cell(row=row_idx, column=col_idx)
+                            if isinstance(val, CellRichText): cell.value = val
+                            else: cell.value = val
+                    else:
+                        report_data_fallback.append([file, sb['ID'], sb['Timeline'], s_txt, t_txt, tgt_context, err_str])
+                    error_total += 1
+
+        if ws: wb.save(out_file)
+        else: pd.DataFrame(report_data_fallback, columns=["文件名", "字幕id", "时间轴", "源语言字幕内容", "目标语言字幕内容", "该行目标语言字幕的上下文内容", "报错信息"]).to_excel(out_file, index=False)
+        
+        if error_total == 0: messagebox.showinfo("完成", "检查完毕！未发现任何术语遗漏或匹配错误。")
+        else: messagebox.showwarning("检查完成", f"检查完毕！共发现 {error_total} 处异常。\n报告已导出至：\n{out_file}")
+    
+    except Exception as e:
+        messagebox.showerror("错误", f"运行中发生错误:\n{str(e)}")
+
+# --- 选项3专属的分类扫描及选框 ---
+def scan_tc_cats():
+    tb_file = tc_tb_path.get().strip()
+    col_cat = tc_cat_col.get().strip()
+    if not tb_file or not os.path.exists(tb_file): return messagebox.showwarning("提示", "请先在上方输入有效的术语表文件路径！")
+    if not col_cat: return messagebox.showwarning("提示", "请输入分类列名！")
+    try:
+        if tb_file.lower().endswith('.csv'): tb_df = pd.read_csv(tb_file)
+        else: tb_df = pd.read_excel(tb_file)
+        if col_cat not in tb_df.columns: return messagebox.showerror("错误", f"术语表中找不到列名：'{col_cat}'")
+        cats = set(str(x).strip() for x in tb_df[col_cat] if pd.notna(x) and str(x).strip() and str(x).lower() not in ['nan', 'none'])
+        lb_tc_cats.delete(0, tk.END)
+        for c in sorted(list(cats)): lb_tc_cats.insert(tk.END, c)
+        messagebox.showinfo("成功", f"扫描完毕！共发现 {len(cats)} 种分类。")
+    except Exception as e:
+        messagebox.showerror("错误", f"读取失败:\n{str(e)}")
+
+# ================= TAB 13: SRT字幕术语批量检查 =================
+tab_term_check = create_scrollable_tab(nb_other, " SRT术语检查 ", padding=20)
+tab_term_check.columnconfigure(1, weight=1)
+
+tc_src_dir = tk.StringVar()
+tc_tgt_dir = tk.StringVar()
+tc_tb_path = tk.StringVar()
+tc_out_path = tk.StringVar()
+
+tc_src_col = tk.StringVar(value="zh_CN")
+tc_tgt_col = tk.StringVar(value="id_ID")
+tc_match_mode = tk.IntVar(value=1) # 0: ID匹配, 1: ID+时间轴匹配
+tc_ctx_range = tk.IntVar(value=1)
+tc_strict_ctx = tk.IntVar(value=1)
+tc_strict_syms = tk.StringVar(value=r"([,\-]$|\.\.\.$|[^.。!?！？”\"';；]$)")
+tc_ign_case = tk.IntVar(value=1)
+tc_ign_count = tk.IntVar(value=0)
+
+tc_ign_count = tk.IntVar(value=0)
+
+# ====== 新增：选项3 专属控制变量 ======
+tc_partial_match = tk.IntVar(value=0)
+tc_cat_col = tk.StringVar(value="Type")
+# ==================================
+
+# --- UI 布局 ---
+f_tc_inputs = ttk.Frame(tab_term_check)
+f_tc_inputs.pack(fill=tk.X, pady=10, padx=5)
+f_tc_inputs.columnconfigure(1, weight=1) # 让中间的输入框自动拉伸填满空间
+
+# 第一行：源语言文件夹
+ttk.Label(f_tc_inputs, text="1. 源语言字幕文件夹:").grid(row=0, column=0, sticky="e", pady=5)
+ttk.Entry(f_tc_inputs, textvariable=tc_src_dir).grid(row=0, column=1, sticky="ew", padx=10, pady=5)
+ttk.Button(f_tc_inputs, text="浏览...", command=lambda: ask_dir(tc_src_dir, "选择源语言字幕文件夹")).grid(row=0, column=2, padx=5, pady=5)
+
+# 第二行：目标语言文件夹
+ttk.Label(f_tc_inputs, text="2. 目标语言字幕文件夹:").grid(row=1, column=0, sticky="e", pady=5)
+ttk.Entry(f_tc_inputs, textvariable=tc_tgt_dir).grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+ttk.Button(f_tc_inputs, text="浏览...", command=lambda: ask_dir(tc_tgt_dir, "选择目标语言字幕文件夹")).grid(row=1, column=2, padx=5, pady=5)
+
+# 第三行：术语表文件
+ttk.Label(f_tc_inputs, text="3. 术语表文件 (Excel/CSV):").grid(row=2, column=0, sticky="e", pady=5)
+ttk.Entry(f_tc_inputs, textvariable=tc_tb_path).grid(row=2, column=1, sticky="ew", padx=10, pady=5)
+ttk.Button(f_tc_inputs, text="浏览...", command=lambda: tc_tb_path.set(filedialog.askopenfilename(filetypes=[("Excel/CSV", "*.xlsx *.csv")]))).grid(row=2, column=2, padx=5, pady=5)
+
+# 第四行：读取列名设置
+ttk.Label(f_tc_inputs, text="   读取列名 ->").grid(row=3, column=0, sticky="e", pady=5)
+f_tc_cols = ttk.Frame(f_tc_inputs)
+f_tc_cols.grid(row=3, column=1, columnspan=2, sticky="w", padx=10, pady=5)
+ttk.Label(f_tc_cols, text="源语言列:").pack(side=tk.LEFT)
+ttk.Entry(f_tc_cols, textvariable=tc_src_col, width=15).pack(side=tk.LEFT, padx=(5, 20))
+ttk.Label(f_tc_cols, text="目标语言列:").pack(side=tk.LEFT)
+ttk.Entry(f_tc_cols, textvariable=tc_tgt_col, width=15).pack(side=tk.LEFT, padx=5)
+
+f_tc_3 = ttk.LabelFrame(tab_term_check, text="匹配与上下文设置", padding=10)
+f_tc_3.pack(fill=tk.X, pady=10)
+ttk.Radiobutton(f_tc_3, text="基础匹配: 仅校验 ID 一致", variable=tc_match_mode, value=0).grid(row=0, column=0, sticky="w")
+ttk.Radiobutton(f_tc_3, text="严格匹配: ID 及 时间轴 均一致", variable=tc_match_mode, value=1).grid(row=0, column=1, sticky="w", padx=20)
+
+f_tc_ctx = ttk.Frame(f_tc_3)
+f_tc_ctx.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10,0))
+ttk.Label(f_tc_ctx, text="上下文查找范围 (单侧扩展行数):").pack(side=tk.LEFT)
+tk.Spinbox(f_tc_ctx, from_=0, to=10, textvariable=tc_ctx_range, width=5).pack(side=tk.LEFT, padx=5)
+
+ttk.Checkbutton(f_tc_ctx, text="启用严格连贯模式 | 连贯条件(满足正则即连入下文):", variable=tc_strict_ctx).pack(side=tk.LEFT)
+ttk.Entry(f_tc_ctx, textvariable=tc_strict_syms, width=28).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_tc_ctx, text="(只要正则匹配成功，句子即算作连贯。支持复杂组合逻辑)", foreground="gray").pack(side=tk.LEFT)
+
+f_tc_4 = ttk.LabelFrame(tab_term_check, text="术语校验规则", padding=10)
+f_tc_4.pack(fill=tk.X, pady=5)
+
+f_tc_4_top = ttk.Frame(f_tc_4)
+f_tc_4_top.pack(fill=tk.X, anchor="w")
+ttk.Checkbutton(f_tc_4_top, text="选项1: 忽略目标翻译大小写 (例如 ABC 等同 abc)", variable=tc_ign_case).pack(side=tk.LEFT, padx=10)
+ttk.Checkbutton(f_tc_4_top, text="选项2: 忽略术语出现数量 (只要出现即不报错)", variable=tc_ign_count).pack(side=tk.LEFT, padx=30)
+
+f_tc_4_mid = ttk.Frame(f_tc_4)
+f_tc_4_mid.pack(fill=tk.X, pady=(10, 5), anchor="w")
+ttk.Checkbutton(f_tc_4_mid, text="选项3: 部分匹配 (目标翻译术语以空格分隔，任意单词命中即算作翻译成功)", variable=tc_partial_match).pack(side=tk.LEFT, padx=10)
+
+
+f_tc_4_bot = ttk.Frame(f_tc_4)
+f_tc_4_bot.pack(fill=tk.X, anchor="w", padx=30)
+ttk.Label(f_tc_4_bot, text="指定应用部分匹配的列名:").pack(side=tk.LEFT)
+ttk.Entry(f_tc_4_bot, textvariable=tc_cat_col, width=12).pack(side=tk.LEFT, padx=5)
+ttk.Button(f_tc_4_bot, text="🔍 扫描列内容", command=scan_tc_cats).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_tc_4_bot, text="选择允许部分匹配的分类 (支持多选):").pack(side=tk.LEFT, padx=(10, 5))
+
+f_tc_lb = ttk.Frame(f_tc_4_bot)
+f_tc_lb.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+lb_tc_cats = tk.Listbox(f_tc_lb, selectmode=tk.MULTIPLE, height=3, exportselection=False)
+lb_tc_cats.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+sb_tc_cats = ttk.Scrollbar(f_tc_lb, command=lb_tc_cats.yview)
+sb_tc_cats.pack(side=tk.LEFT, fill=tk.Y)
+lb_tc_cats.config(yscrollcommand=sb_tc_cats.set)
+
+f_tc_5 = ttk.Frame(tab_term_check)
+f_tc_5.pack(fill=tk.X, pady=15)
+ttk.Label(f_tc_5, text="4. 检查报告输出至 (Excel):").pack(side=tk.LEFT)
+ttk.Entry(f_tc_5, textvariable=tc_out_path, width=60).pack(side=tk.LEFT, padx=5)
+ttk.Button(f_tc_5, text="浏览", command=lambda: ask_save_file(tc_out_path, "保存术语检查报告", [("Excel", "*.xlsx")], ".xlsx")).pack(side=tk.LEFT)
+
+ttk.Button(tab_tc:=ttk.Frame(tab_term_check), text="🚀 开始执行批量术语检查", command=run_term_check, style='TButton').pack(pady=10, ipadx=30, ipady=5)
+tab_tc.pack(fill=tk.X)
+# ===============================================================
+
+# ====== 新增：XLSX 批量合并功能 ======
+ext_merge_in_var = tk.StringVar()
+ext_merge_out_var = tk.StringVar()
+# ================= TAB 14: XLSX 批量合并 =================
+tab_xlsx_merge = ttk.Frame(nb_other, padding=30)
+# 直接将它作为一个全新的标签页，挂载到全局大容器 nb_ass 中
+nb_other.add(tab_xlsx_merge, text=" 📊 XLSX批量合并 ")
+tab_xlsx_merge.columnconfigure(1, weight=1)
+
+# --- 全新独立标签页的 UI 布局 (间距更宽敞、更美观) ---
+ttk.Label(tab_xlsx_merge, text="1. 包含待合并 XLSX 文件的输入文件夹:").grid(row=0, column=0, sticky="e", pady=20)
+ttk.Entry(tab_xlsx_merge, textvariable=ext_merge_in_var, width=50).grid(row=0, column=1, sticky="ew", padx=15, pady=20)
+ttk.Button(tab_xlsx_merge, text="浏览...", command=lambda: ask_dir(ext_merge_in_var, "选择需要合并的XLSX文件夹")).grid(row=0, column=2, padx=5, pady=20)
+
+ttk.Label(tab_xlsx_merge, text="2. 合并后的新文件保存至 (Excel):").grid(row=1, column=0, sticky="e", pady=20)
+ttk.Entry(tab_xlsx_merge, textvariable=ext_merge_out_var, width=50).grid(row=1, column=1, sticky="ew", padx=15, pady=20)
+ttk.Button(tab_xlsx_merge, text="浏览...", command=lambda: ask_save_file(ext_merge_out_var, "保存合并后的文件", [("Excel", "*.xlsx")], ".xlsx")).grid(row=1, column=2, padx=5, pady=20)
+
+ttk.Button(tab_xlsx_merge, text="⚡ 开始执行批量合并", command=run_xlsx_merge, style='TButton').grid(row=2, column=0, columnspan=3, pady=40, ipadx=30, ipady=10)
+
+ttk.Label(tab_xlsx_merge, text="* 提示：本功能会以文件名排序合并文件。第一个文件将保留第一行作为表头，其余所有文件会自动剔除第一行再拼接。", foreground="gray").grid(row=3, column=0, columnspan=3)
+# ========================================================
 
 update_m0_ui()
 update_m8_ui()
