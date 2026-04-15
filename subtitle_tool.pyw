@@ -697,7 +697,7 @@ def process_merge_mode2(src_dir, tgt_dir, src_lang_name, tgt_lang_name, output_e
                 row_dict[tgt_lang_name] = tgt_text
             master_data.append(row_dict)
             
-    pd.DataFrame(master_data).to_excel(output_excel, index=False)
+    pd.DataFrame(master_data).to_excel(output_excel, index=False, sheet_name="Subtitle Translation")
     return len(src_files)
 
 def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_str, col_text_str):
@@ -1076,16 +1076,32 @@ def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, 
     if all_errors and err_rep and not is_header: pd.DataFrame(all_errors).to_excel(err_rep, index=False)
     return processed_count, len(all_errors)
 
-def process_srt_bilingual_split_batch(in_dir, out_dir, suffix1, suffix2):
+def process_srt_bilingual_split_batch(in_dir, out_dir1, out_dir2, suffix1, suffix2, report_path=None, split_mode=1):
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.srt')]
     if not files: raise ValueError("输入文件夹中没有找到 .srt 文件！")
-    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(out_dir1, exist_ok=True)
+    os.makedirs(out_dir2, exist_ok=True)
     total_blocks = 0
+    all_errors = []
     
-    def char_profile(s):
+    # 模式1：经典宽泛识别（基于宽泛 CJK 区块 vs 拉丁字母）
+    def char_profile_classic(s):
         cjk = len(re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0e00-\u0e7f\u0400-\u04ff]', s))
         latin = len(re.findall(r'[a-zA-Z]', s))
         return 'C' if cjk > latin else 'L'
+
+    # 模式2：强化东亚语言特征识别（精准锁定独占字符）
+    def char_profile_advanced(s):
+        kana = len(re.findall(r'[\u3040-\u30ff]', s))       # 平假名/片假名
+        hangul = len(re.findall(r'[\uac00-\ud7af]', s))     # 韩文谚文
+        hanzi = len(re.findall(r'[\u4e00-\u9fa5]', s))      # 纯汉字
+        latin = len(re.findall(r'[a-zA-Z]', s))             # 拉丁字母
+        
+        if hangul > 0: return 'KR' # 出现韩文
+        if kana > 0: return 'JP'   # 出现假名即判定为日语
+        if hanzi > 0: return 'CN'  # 有汉字且无假名，判定为中文
+        if latin > 0: return 'EN'  # 纯英文或拼音
+        return 'OTHER'
 
     for file in files:
         srt_file = os.path.join(in_dir, file)
@@ -1101,22 +1117,40 @@ def process_srt_bilingual_split_batch(in_dir, out_dir, suffix1, suffix2):
             elif len(lines) == 2: text1, text2 = lines[0], lines[1]
             elif len(lines) == 4: text1, text2 = "\n".join(lines[:2]), "\n".join(lines[2:])
             elif len(lines) == 3:
-                p0, p1, p2 = char_profile(lines[0]), char_profile(lines[1]), char_profile(lines[2])
+                # 根据不同模式调用不同的画像函数
+                if split_mode == 2:
+                    p0, p1, p2 = char_profile_advanced(lines[0]), char_profile_advanced(lines[1]), char_profile_advanced(lines[2])
+                else:
+                    p0, p1, p2 = char_profile_classic(lines[0]), char_profile_classic(lines[1]), char_profile_classic(lines[2])
+                
+                # 逻辑：如果前两行语言类型一致，且与第三行不同，则切分为 2+1
                 if p1 == p0 and p1 != p2: text1, text2 = "\n".join(lines[:2]), lines[2]
                 elif p1 == p2 and p1 != p0: text1, text2 = lines[0], "\n".join(lines[1:])
-                else: text1, text2 = "\n".join(lines[:2]), lines[2]
+                else: text1, text2 = "\n".join(lines[:2]), lines[2] # 兜底策略
             else:
                 half = len(lines) // 2
                 text1, text2 = "\n".join(lines[:half]), "\n".join(lines[half:])
                 
+            if not text1.strip() or not text2.strip():
+                err_msg = []
+                if not text1.strip(): err_msg.append(f"上方语言({suffix1})为空")
+                if not text2.strip(): err_msg.append(f"下方语言({suffix2})为空")
+                all_errors.append({
+                    '文件名': file, '字幕ID': block['ID'], '时间轴': block['Timeline'],
+                    '原始双语文本': block['Text'], '错误说明': " & ".join(err_msg)
+                })
+                
             out_blocks1.append(f"{block['ID']}\n{block['Timeline']}\n{text1}\n")
             out_blocks2.append(f"{block['ID']}\n{block['Timeline']}\n{text2}\n")
             
-        with open(os.path.join(out_dir, f"{base_name}_{suffix1}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks1))
-        with open(os.path.join(out_dir, f"{base_name}_{suffix2}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks2))
+        with open(os.path.join(out_dir1, f"{base_name}_{suffix1}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks1))
+        with open(os.path.join(out_dir2, f"{base_name}_{suffix2}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks2))
         total_blocks += len(blocks)
         
-    return len(files), total_blocks
+    if all_errors and report_path:
+        pd.DataFrame(all_errors).to_excel(report_path, index=False)
+        
+    return len(files), total_blocks, len(all_errors)
 
 def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict, style_mode, ref_cfg, regex_cfg=None):
     os.makedirs(out_dir, exist_ok=True)
@@ -1601,13 +1635,23 @@ def run_column_copy():
     except Exception as e: messagebox.showerror("错误", f"处理失败:\n{str(e)}")
 
 def run_srt_bilingual_split():
-    in_d, out_d = bi_srt_var.get().strip(), bi_out_dir_var.get().strip()
+    in_d = bi_srt_var.get().strip()
+    out_d1, out_d2 = bi_out_dir1_var.get().strip(), bi_out_dir2_var.get().strip()
     s1, s2 = bi_suf1_var.get().strip(), bi_suf2_var.get().strip()
-    if not in_d or not out_d: return messagebox.showwarning("警告", "请选择输入和输出目录！")
+    err_rep = bi_err_rep_var.get().strip()
+    s_mode = bi_split_mode_var.get() # 新增：获取模式变量
+    
+    if not in_d or not out_d1 or not out_d2: return messagebox.showwarning("警告", "请完整选择输入和两个输出目录！")
     if not s1 or not s2: return messagebox.showwarning("警告", "请输入拆分后的语言后缀！")
     try:
-        file_count, block_count = process_srt_bilingual_split_batch(in_d, out_d, s1, s2)
-        messagebox.showinfo("完成", f"批量拆分成功！\n共处理 {file_count} 个文件（合计 {block_count} 条字幕），已导出单语 SRT。")
+        # 将 s_mode 传递给底层函数
+        file_count, block_count, err_count = process_srt_bilingual_split_batch(in_d, out_d1, out_d2, s1, s2, err_rep, s_mode)
+        if err_count > 0:
+            msg = f"批量拆分完成！\n共处理 {file_count} 个文件（合计 {block_count} 条字幕）。\n\n⚠️ 发现 {err_count} 处拆分后存在空白行的情况！"
+            if err_rep: msg += f"\n详细空白行报错报告已导出至：\n{err_rep}"
+            messagebox.showwarning("部分完成", msg)
+        else:
+            messagebox.showinfo("完成", f"批量拆分成功！\n共处理 {file_count} 个文件（合计 {block_count} 条字幕），两种语言已分别完美导出。")
     except Exception as e: messagebox.showerror("错误", f"拆分失败:\n{str(e)}")
 
 def run_merge_srt_to_ass():
@@ -1907,26 +1951,43 @@ tab_bi = ttk.Frame(nb_srt, padding=20)
 nb_srt.add(tab_bi, text=" 双语 SRT 批量拆分 ")
 tab_bi.columnconfigure(1, weight=1)
 
-bi_srt_var, bi_out_dir_var = tk.StringVar(), tk.StringVar()
+bi_srt_var = tk.StringVar()
+bi_out_dir1_var, bi_out_dir2_var = tk.StringVar(), tk.StringVar()
 bi_suf1_var, bi_suf2_var = tk.StringVar(value="语言1"), tk.StringVar(value="语言2")
+bi_err_rep_var = tk.StringVar() # 新增：报告路径变量
+bi_split_mode_var = tk.IntVar(value=1) # 新增：默认选中模式1
 
-ttk.Label(tab_bi, text="双语 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", pady=15, padx=(0,10))
+ttk.Label(tab_bi, text="双语 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
 ttk.Entry(tab_bi, textvariable=bi_srt_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_srt_var, "选择输入文件夹")).grid(row=0, column=2, padx=5)
 
-ttk.Label(tab_bi, text="上方语言文件后缀:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_suf1_var, width=15).grid(row=1, column=1, sticky="w", padx=5)
+ttk.Label(tab_bi, text="【上方语言】保存目录:").grid(row=1, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_out_dir1_var).grid(row=1, column=1, sticky="ew", padx=5)
+ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir1_var, "选择上方语言输出目录")).grid(row=1, column=2, padx=5)
 
-ttk.Label(tab_bi, text="下方语言文件后缀:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_suf2_var, width=15).grid(row=2, column=1, sticky="w", padx=5)
+ttk.Label(tab_bi, text="上方语言文件后缀:").grid(row=2, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_suf1_var, width=15).grid(row=2, column=1, sticky="w", padx=5)
 
-ttk.Label(tab_bi, text="拆分后单语保存目录:").grid(row=3, column=0, sticky="e", pady=15, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_out_dir_var).grid(row=3, column=1, sticky="ew", padx=5)
-ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir_var, "选择输出目录")).grid(row=3, column=2, padx=5)
+ttk.Label(tab_bi, text="【下方语言】保存目录:").grid(row=3, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_out_dir2_var).grid(row=3, column=1, sticky="ew", padx=5)
+ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir2_var, "选择下方语言输出目录")).grid(row=3, column=2, padx=5)
 
-ttk.Label(tab_bi, text="* 注：支持 1-4 行的混合长段，4行(3换行符)将自动完美 2+2 切分。", foreground="gray").grid(row=4, column=0, columnspan=3, pady=(0,10))
-ttk.Button(tab_bi, text="开始批量拆分双语", command=run_srt_bilingual_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+ttk.Label(tab_bi, text="下方语言文件后缀:").grid(row=4, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_suf2_var, width=15).grid(row=4, column=1, sticky="w", padx=5)
 
+# 新增：空白行报告导出选项
+ttk.Label(tab_bi, text="空白异常报告保存至(可选):").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_err_rep_var).grid(row=5, column=1, sticky="ew", padx=5)
+ttk.Button(tab_bi, text="浏览...", command=lambda: ask_save_file(bi_err_rep_var, "保存异常报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=5, column=2, padx=5)
+
+# ====== 新增：拆分模式选择区域 ======
+f_bi_mode = ttk.LabelFrame(tab_bi, text="3行字幕拆分策略 (语言识别引擎)", padding=10)
+f_bi_mode.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(15, 5))
+ttk.Radiobutton(f_bi_mode, text="经典模式 (基于中日韩区块/纯英文字母)", variable=bi_split_mode_var, value=1).pack(side=tk.LEFT, padx=10)
+ttk.Radiobutton(f_bi_mode, text="强化东亚语言模式 (识别假名/谚文)", variable=bi_split_mode_var, value=2).pack(side=tk.LEFT, padx=10)
+# ===================================
+
+ttk.Button(tab_bi, text="开始批量拆分双语", command=run_srt_bilingual_split, style='TButton').grid(row=7, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 # ================= TAB 10: 自动时间轴拆分 =================
 tab_ts = ttk.Frame(nb_srt, padding=20)
 nb_srt.add(tab_ts, text=" 自动时间轴拆分 ")
@@ -4410,39 +4471,96 @@ def save_ext_preset():
 
 ttk.Button(tab_ext, text="💾 提取并保存为全局 ASS 预设", command=save_ext_preset, style='TButton').grid(row=3, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
 
-
 def run_xlsx_merge():
     in_dir = ext_merge_in_var.get().strip()
     out_file = ext_merge_out_var.get().strip()
     if not in_dir or not out_file:
         return messagebox.showwarning("警告", "请完整选择输入文件夹和输出文件路径！")
     try:
-        # 获取所有 xlsx 文件，并自动忽略打开时产生的临时隐藏文件(~$开头)
+        import openpyxl
+        from copy import copy
+        from openpyxl.utils import get_column_letter, column_index_from_string
+        
         files = [f for f in os.listdir(in_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')]
         if not files:
             return messagebox.showwarning("警告", "输入文件夹中没有找到有效的 .xlsx 文件！")
         
-        # 按文件名排序，确保合并顺序稳定
         files.sort()
         
-        dfs = []
+        # 创建新的母表
+        wb_out = openpyxl.Workbook()
+        ws_out = wb_out.active
+        current_out_row = 1
+        
         for i, f in enumerate(files):
             fp = os.path.join(in_dir, f)
-            # 读取时不设表头，纯粹当作数据读取
-            df = pd.read_excel(fp, header=None)
+            
+            try:
+                wb_in = openpyxl.load_workbook(fp, rich_text=True)
+            except TypeError:
+                wb_in = openpyxl.load_workbook(fp)
+            
+            ws_in = wb_in.active
+            
+            # 继承列宽，整体向右偏移一列
             if i == 0:
-                dfs.append(df) # 第一个文件：保留所有行
-            else:
-                dfs.append(df.iloc[1:]) # 其余文件：砍掉第一行
-        
-        merged_df = pd.concat(dfs, ignore_index=True)
-        merged_df.to_excel(out_file, index=False, header=False)
-        messagebox.showinfo("完成", f"合并成功！\n共完美拼接了 {len(files)} 个 XLSX 文件。")
+                # 给第一列（From列）设置一个默认的合适宽度
+                ws_out.column_dimensions['A'].width = 25
+                for col_letter, col_dim in ws_in.column_dimensions.items():
+                    try:
+                        old_idx = column_index_from_string(col_letter)
+                        new_letter = get_column_letter(old_idx + 1)
+                        ws_out.column_dimensions[new_letter].width = col_dim.width
+                    except: pass
+            
+            start_row = 1 if i == 0 else 2
+            max_row = ws_in.max_row
+            max_col = ws_in.max_column
+            
+            if max_row < start_row: continue 
+            
+            for row_idx in range(start_row, max_row + 1):
+                
+                # ====== 新增：在第一列写入 From 来源信息 ======
+                if i == 0 and row_idx == 1:
+                    # 第一个文件的第一行，写表头 "From"
+                    ws_out.cell(row=current_out_row, column=1, value="From")
+                else:
+                    # 其余所有数据行，写入当前对应的文件名
+                    ws_out.cell(row=current_out_row, column=1, value=f)
+                # ===============================================
+
+                # 继承行高
+                source_row_dim = ws_in.row_dimensions[row_idx]
+                if source_row_dim.height is not None:
+                    ws_out.row_dimensions[current_out_row].height = source_row_dim.height
+
+                for col_idx in range(1, max_col + 1):
+                    source_cell = ws_in.cell(row=row_idx, column=col_idx)
+                    
+                    # 核心改动：目标单元格的 column 需要加 1（向右偏移）
+                    target_cell = ws_out.cell(row=current_out_row, column=col_idx + 1, value=source_cell.value)
+                    
+                    if source_cell.has_style:
+                        target_cell.font = copy(source_cell.font)
+                        target_cell.border = copy(source_cell.border)
+                        target_cell.fill = copy(source_cell.fill)
+                        target_cell.number_format = copy(source_cell.number_format)
+                        target_cell.protection = copy(source_cell.protection)
+                        target_cell.alignment = copy(source_cell.alignment)
+                    
+                    if hasattr(source_cell, 'hyperlink') and source_cell.hyperlink:
+                        target_cell.hyperlink = copy(source_cell.hyperlink)
+                        # 修复超链接坐标引发 Excel 报错的机制
+                        target_cell.hyperlink.ref = target_cell.coordinate
+                
+                current_out_row += 1
+                
+        wb_out.save(out_file)
+        messagebox.showinfo("完成", f"合并成功！\n共完美拼接了 {len(files)} 个 XLSX 文件。\n\n💡 已在第一列成功附加【From】文件名来源列！")
     except Exception as e:
         messagebox.showerror("错误", f"合并失败:\n{str(e)}")
-
-
-
+        
 root.update_idletasks()
 try:
     fonts = list(tkfont.families())
