@@ -1143,8 +1143,12 @@ def process_srt_bilingual_split_batch(in_dir, out_dir1, out_dir2, suffix1, suffi
             out_blocks1.append(f"{block['ID']}\n{block['Timeline']}\n{text1}\n")
             out_blocks2.append(f"{block['ID']}\n{block['Timeline']}\n{text2}\n")
             
-        with open(os.path.join(out_dir1, f"{base_name}_{suffix1}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks1))
-        with open(os.path.join(out_dir2, f"{base_name}_{suffix2}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks2))
+        # 智能拼接文件名：如果有后缀就加下划线和后缀，如果没有就直接用原名
+        out_name1 = f"{base_name}_{suffix1}.srt" if suffix1 else f"{base_name}.srt"
+        out_name2 = f"{base_name}_{suffix2}.srt" if suffix2 else f"{base_name}.srt"
+        
+        with open(os.path.join(out_dir1, out_name1), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks1))
+        with open(os.path.join(out_dir2, out_name2), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks2))
         total_blocks += len(blocks)
         
     if all_errors and report_path:
@@ -1639,10 +1643,10 @@ def run_srt_bilingual_split():
     out_d1, out_d2 = bi_out_dir1_var.get().strip(), bi_out_dir2_var.get().strip()
     s1, s2 = bi_suf1_var.get().strip(), bi_suf2_var.get().strip()
     err_rep = bi_err_rep_var.get().strip()
-    s_mode = bi_split_mode_var.get() # 新增：获取模式变量
+    s_mode = bi_split_mode_var.get()
     
     if not in_d or not out_d1 or not out_d2: return messagebox.showwarning("警告", "请完整选择输入和两个输出目录！")
-    if not s1 or not s2: return messagebox.showwarning("警告", "请输入拆分后的语言后缀！")
+    # 彻底移除了对 s1 和 s2 的强制输入校验，允许它们为空字符串
     try:
         # 将 s_mode 传递给底层函数
         file_count, block_count, err_count = process_srt_bilingual_split_batch(in_d, out_d1, out_d2, s1, s2, err_rep, s_mode)
