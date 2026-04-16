@@ -697,7 +697,7 @@ def process_merge_mode2(src_dir, tgt_dir, src_lang_name, tgt_lang_name, output_e
                 row_dict[tgt_lang_name] = tgt_text
             master_data.append(row_dict)
             
-    pd.DataFrame(master_data).to_excel(output_excel, index=False)
+    pd.DataFrame(master_data).to_excel(output_excel, index=False, sheet_name="Subtitle Translation")
     return len(src_files)
 
 def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_str, col_text_str):
@@ -1076,16 +1076,32 @@ def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, 
     if all_errors and err_rep and not is_header: pd.DataFrame(all_errors).to_excel(err_rep, index=False)
     return processed_count, len(all_errors)
 
-def process_srt_bilingual_split_batch(in_dir, out_dir, suffix1, suffix2):
+def process_srt_bilingual_split_batch(in_dir, out_dir1, out_dir2, suffix1, suffix2, report_path=None, split_mode=1):
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.srt')]
     if not files: raise ValueError("输入文件夹中没有找到 .srt 文件！")
-    os.makedirs(out_dir, exist_ok=True)
+    os.makedirs(out_dir1, exist_ok=True)
+    os.makedirs(out_dir2, exist_ok=True)
     total_blocks = 0
+    all_errors = []
     
-    def char_profile(s):
+    # 模式1：经典宽泛识别（基于宽泛 CJK 区块 vs 拉丁字母）
+    def char_profile_classic(s):
         cjk = len(re.findall(r'[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u0e00-\u0e7f\u0400-\u04ff]', s))
         latin = len(re.findall(r'[a-zA-Z]', s))
         return 'C' if cjk > latin else 'L'
+
+    # 模式2：强化东亚语言特征识别（精准锁定独占字符）
+    def char_profile_advanced(s):
+        kana = len(re.findall(r'[\u3040-\u30ff]', s))       # 平假名/片假名
+        hangul = len(re.findall(r'[\uac00-\ud7af]', s))     # 韩文谚文
+        hanzi = len(re.findall(r'[\u4e00-\u9fa5]', s))      # 纯汉字
+        latin = len(re.findall(r'[a-zA-Z]', s))             # 拉丁字母
+        
+        if hangul > 0: return 'KR' # 出现韩文
+        if kana > 0: return 'JP'   # 出现假名即判定为日语
+        if hanzi > 0: return 'CN'  # 有汉字且无假名，判定为中文
+        if latin > 0: return 'EN'  # 纯英文或拼音
+        return 'OTHER'
 
     for file in files:
         srt_file = os.path.join(in_dir, file)
@@ -1101,22 +1117,44 @@ def process_srt_bilingual_split_batch(in_dir, out_dir, suffix1, suffix2):
             elif len(lines) == 2: text1, text2 = lines[0], lines[1]
             elif len(lines) == 4: text1, text2 = "\n".join(lines[:2]), "\n".join(lines[2:])
             elif len(lines) == 3:
-                p0, p1, p2 = char_profile(lines[0]), char_profile(lines[1]), char_profile(lines[2])
+                # 根据不同模式调用不同的画像函数
+                if split_mode == 2:
+                    p0, p1, p2 = char_profile_advanced(lines[0]), char_profile_advanced(lines[1]), char_profile_advanced(lines[2])
+                else:
+                    p0, p1, p2 = char_profile_classic(lines[0]), char_profile_classic(lines[1]), char_profile_classic(lines[2])
+                
+                # 逻辑：如果前两行语言类型一致，且与第三行不同，则切分为 2+1
                 if p1 == p0 and p1 != p2: text1, text2 = "\n".join(lines[:2]), lines[2]
                 elif p1 == p2 and p1 != p0: text1, text2 = lines[0], "\n".join(lines[1:])
-                else: text1, text2 = "\n".join(lines[:2]), lines[2]
+                else: text1, text2 = "\n".join(lines[:2]), lines[2] # 兜底策略
             else:
                 half = len(lines) // 2
                 text1, text2 = "\n".join(lines[:half]), "\n".join(lines[half:])
                 
+            if not text1.strip() or not text2.strip():
+                err_msg = []
+                if not text1.strip(): err_msg.append(f"上方语言({suffix1})为空")
+                if not text2.strip(): err_msg.append(f"下方语言({suffix2})为空")
+                all_errors.append({
+                    '文件名': file, '字幕ID': block['ID'], '时间轴': block['Timeline'],
+                    '原始双语文本': block['Text'], '错误说明': " & ".join(err_msg)
+                })
+                
             out_blocks1.append(f"{block['ID']}\n{block['Timeline']}\n{text1}\n")
             out_blocks2.append(f"{block['ID']}\n{block['Timeline']}\n{text2}\n")
             
-        with open(os.path.join(out_dir, f"{base_name}_{suffix1}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks1))
-        with open(os.path.join(out_dir, f"{base_name}_{suffix2}.srt"), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks2))
+        # 智能拼接文件名：如果有后缀就加下划线和后缀，如果没有就直接用原名
+        out_name1 = f"{base_name}_{suffix1}.srt" if suffix1 else f"{base_name}.srt"
+        out_name2 = f"{base_name}_{suffix2}.srt" if suffix2 else f"{base_name}.srt"
+        
+        with open(os.path.join(out_dir1, out_name1), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks1))
+        with open(os.path.join(out_dir2, out_name2), 'w', encoding='utf-8') as f: f.write("\n".join(out_blocks2))
         total_blocks += len(blocks)
         
-    return len(files), total_blocks
+    if all_errors and report_path:
+        pd.DataFrame(all_errors).to_excel(report_path, index=False)
+        
+    return len(files), total_blocks, len(all_errors)
 
 def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict, style_mode, ref_cfg, regex_cfg=None):
     os.makedirs(out_dir, exist_ok=True)
@@ -1601,13 +1639,23 @@ def run_column_copy():
     except Exception as e: messagebox.showerror("错误", f"处理失败:\n{str(e)}")
 
 def run_srt_bilingual_split():
-    in_d, out_d = bi_srt_var.get().strip(), bi_out_dir_var.get().strip()
+    in_d = bi_srt_var.get().strip()
+    out_d1, out_d2 = bi_out_dir1_var.get().strip(), bi_out_dir2_var.get().strip()
     s1, s2 = bi_suf1_var.get().strip(), bi_suf2_var.get().strip()
-    if not in_d or not out_d: return messagebox.showwarning("警告", "请选择输入和输出目录！")
-    if not s1 or not s2: return messagebox.showwarning("警告", "请输入拆分后的语言后缀！")
+    err_rep = bi_err_rep_var.get().strip()
+    s_mode = bi_split_mode_var.get()
+    
+    if not in_d or not out_d1 or not out_d2: return messagebox.showwarning("警告", "请完整选择输入和两个输出目录！")
+    # 彻底移除了对 s1 和 s2 的强制输入校验，允许它们为空字符串
     try:
-        file_count, block_count = process_srt_bilingual_split_batch(in_d, out_d, s1, s2)
-        messagebox.showinfo("完成", f"批量拆分成功！\n共处理 {file_count} 个文件（合计 {block_count} 条字幕），已导出单语 SRT。")
+        # 将 s_mode 传递给底层函数
+        file_count, block_count, err_count = process_srt_bilingual_split_batch(in_d, out_d1, out_d2, s1, s2, err_rep, s_mode)
+        if err_count > 0:
+            msg = f"批量拆分完成！\n共处理 {file_count} 个文件（合计 {block_count} 条字幕）。\n\n⚠️ 发现 {err_count} 处拆分后存在空白行的情况！"
+            if err_rep: msg += f"\n详细空白行报错报告已导出至：\n{err_rep}"
+            messagebox.showwarning("部分完成", msg)
+        else:
+            messagebox.showinfo("完成", f"批量拆分成功！\n共处理 {file_count} 个文件（合计 {block_count} 条字幕），两种语言已分别完美导出。")
     except Exception as e: messagebox.showerror("错误", f"拆分失败:\n{str(e)}")
 
 def run_merge_srt_to_ass():
@@ -1907,26 +1955,43 @@ tab_bi = ttk.Frame(nb_srt, padding=20)
 nb_srt.add(tab_bi, text=" 双语 SRT 批量拆分 ")
 tab_bi.columnconfigure(1, weight=1)
 
-bi_srt_var, bi_out_dir_var = tk.StringVar(), tk.StringVar()
+bi_srt_var = tk.StringVar()
+bi_out_dir1_var, bi_out_dir2_var = tk.StringVar(), tk.StringVar()
 bi_suf1_var, bi_suf2_var = tk.StringVar(value="语言1"), tk.StringVar(value="语言2")
+bi_err_rep_var = tk.StringVar() # 新增：报告路径变量
+bi_split_mode_var = tk.IntVar(value=1) # 新增：默认选中模式1
 
-ttk.Label(tab_bi, text="双语 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", pady=15, padx=(0,10))
+ttk.Label(tab_bi, text="双语 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
 ttk.Entry(tab_bi, textvariable=bi_srt_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_srt_var, "选择输入文件夹")).grid(row=0, column=2, padx=5)
 
-ttk.Label(tab_bi, text="上方语言文件后缀:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_suf1_var, width=15).grid(row=1, column=1, sticky="w", padx=5)
+ttk.Label(tab_bi, text="【上方语言】保存目录:").grid(row=1, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_out_dir1_var).grid(row=1, column=1, sticky="ew", padx=5)
+ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir1_var, "选择上方语言输出目录")).grid(row=1, column=2, padx=5)
 
-ttk.Label(tab_bi, text="下方语言文件后缀:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_suf2_var, width=15).grid(row=2, column=1, sticky="w", padx=5)
+ttk.Label(tab_bi, text="上方语言文件后缀:").grid(row=2, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_suf1_var, width=15).grid(row=2, column=1, sticky="w", padx=5)
 
-ttk.Label(tab_bi, text="拆分后单语保存目录:").grid(row=3, column=0, sticky="e", pady=15, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_out_dir_var).grid(row=3, column=1, sticky="ew", padx=5)
-ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir_var, "选择输出目录")).grid(row=3, column=2, padx=5)
+ttk.Label(tab_bi, text="【下方语言】保存目录:").grid(row=3, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_out_dir2_var).grid(row=3, column=1, sticky="ew", padx=5)
+ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir2_var, "选择下方语言输出目录")).grid(row=3, column=2, padx=5)
 
-ttk.Label(tab_bi, text="* 注：支持 1-4 行的混合长段，4行(3换行符)将自动完美 2+2 切分。", foreground="gray").grid(row=4, column=0, columnspan=3, pady=(0,10))
-ttk.Button(tab_bi, text="开始批量拆分双语", command=run_srt_bilingual_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+ttk.Label(tab_bi, text="下方语言文件后缀:").grid(row=4, column=0, sticky="e", pady=5, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_suf2_var, width=15).grid(row=4, column=1, sticky="w", padx=5)
 
+# 新增：空白行报告导出选项
+ttk.Label(tab_bi, text="空白异常报告保存至(可选):").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
+ttk.Entry(tab_bi, textvariable=bi_err_rep_var).grid(row=5, column=1, sticky="ew", padx=5)
+ttk.Button(tab_bi, text="浏览...", command=lambda: ask_save_file(bi_err_rep_var, "保存异常报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=5, column=2, padx=5)
+
+# ====== 新增：拆分模式选择区域 ======
+f_bi_mode = ttk.LabelFrame(tab_bi, text="3行字幕拆分策略 (语言识别引擎)", padding=10)
+f_bi_mode.grid(row=6, column=0, columnspan=3, sticky="ew", pady=(15, 5))
+ttk.Radiobutton(f_bi_mode, text="经典模式 (基于中日韩区块/纯英文字母)", variable=bi_split_mode_var, value=1).pack(side=tk.LEFT, padx=10)
+ttk.Radiobutton(f_bi_mode, text="强化东亚语言模式 (识别假名/谚文)", variable=bi_split_mode_var, value=2).pack(side=tk.LEFT, padx=10)
+# ===================================
+
+ttk.Button(tab_bi, text="开始批量拆分双语", command=run_srt_bilingual_split, style='TButton').grid(row=7, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 # ================= TAB 10: 自动时间轴拆分 =================
 tab_ts = ttk.Frame(nb_srt, padding=20)
 nb_srt.add(tab_ts, text=" 自动时间轴拆分 ")
@@ -4410,39 +4475,96 @@ def save_ext_preset():
 
 ttk.Button(tab_ext, text="💾 提取并保存为全局 ASS 预设", command=save_ext_preset, style='TButton').grid(row=3, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
 
-
 def run_xlsx_merge():
     in_dir = ext_merge_in_var.get().strip()
     out_file = ext_merge_out_var.get().strip()
     if not in_dir or not out_file:
         return messagebox.showwarning("警告", "请完整选择输入文件夹和输出文件路径！")
     try:
-        # 获取所有 xlsx 文件，并自动忽略打开时产生的临时隐藏文件(~$开头)
+        import openpyxl
+        from copy import copy
+        from openpyxl.utils import get_column_letter, column_index_from_string
+        
         files = [f for f in os.listdir(in_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')]
         if not files:
             return messagebox.showwarning("警告", "输入文件夹中没有找到有效的 .xlsx 文件！")
         
-        # 按文件名排序，确保合并顺序稳定
         files.sort()
         
-        dfs = []
+        # 创建新的母表
+        wb_out = openpyxl.Workbook()
+        ws_out = wb_out.active
+        current_out_row = 1
+        
         for i, f in enumerate(files):
             fp = os.path.join(in_dir, f)
-            # 读取时不设表头，纯粹当作数据读取
-            df = pd.read_excel(fp, header=None)
+            
+            try:
+                wb_in = openpyxl.load_workbook(fp, rich_text=True)
+            except TypeError:
+                wb_in = openpyxl.load_workbook(fp)
+            
+            ws_in = wb_in.active
+            
+            # 继承列宽，整体向右偏移一列
             if i == 0:
-                dfs.append(df) # 第一个文件：保留所有行
-            else:
-                dfs.append(df.iloc[1:]) # 其余文件：砍掉第一行
-        
-        merged_df = pd.concat(dfs, ignore_index=True)
-        merged_df.to_excel(out_file, index=False, header=False)
-        messagebox.showinfo("完成", f"合并成功！\n共完美拼接了 {len(files)} 个 XLSX 文件。")
+                # 给第一列（From列）设置一个默认的合适宽度
+                ws_out.column_dimensions['A'].width = 25
+                for col_letter, col_dim in ws_in.column_dimensions.items():
+                    try:
+                        old_idx = column_index_from_string(col_letter)
+                        new_letter = get_column_letter(old_idx + 1)
+                        ws_out.column_dimensions[new_letter].width = col_dim.width
+                    except: pass
+            
+            start_row = 1 if i == 0 else 2
+            max_row = ws_in.max_row
+            max_col = ws_in.max_column
+            
+            if max_row < start_row: continue 
+            
+            for row_idx in range(start_row, max_row + 1):
+                
+                # ====== 新增：在第一列写入 From 来源信息 ======
+                if i == 0 and row_idx == 1:
+                    # 第一个文件的第一行，写表头 "From"
+                    ws_out.cell(row=current_out_row, column=1, value="From")
+                else:
+                    # 其余所有数据行，写入当前对应的文件名
+                    ws_out.cell(row=current_out_row, column=1, value=f)
+                # ===============================================
+
+                # 继承行高
+                source_row_dim = ws_in.row_dimensions[row_idx]
+                if source_row_dim.height is not None:
+                    ws_out.row_dimensions[current_out_row].height = source_row_dim.height
+
+                for col_idx in range(1, max_col + 1):
+                    source_cell = ws_in.cell(row=row_idx, column=col_idx)
+                    
+                    # 核心改动：目标单元格的 column 需要加 1（向右偏移）
+                    target_cell = ws_out.cell(row=current_out_row, column=col_idx + 1, value=source_cell.value)
+                    
+                    if source_cell.has_style:
+                        target_cell.font = copy(source_cell.font)
+                        target_cell.border = copy(source_cell.border)
+                        target_cell.fill = copy(source_cell.fill)
+                        target_cell.number_format = copy(source_cell.number_format)
+                        target_cell.protection = copy(source_cell.protection)
+                        target_cell.alignment = copy(source_cell.alignment)
+                    
+                    if hasattr(source_cell, 'hyperlink') and source_cell.hyperlink:
+                        target_cell.hyperlink = copy(source_cell.hyperlink)
+                        # 修复超链接坐标引发 Excel 报错的机制
+                        target_cell.hyperlink.ref = target_cell.coordinate
+                
+                current_out_row += 1
+                
+        wb_out.save(out_file)
+        messagebox.showinfo("完成", f"合并成功！\n共完美拼接了 {len(files)} 个 XLSX 文件。\n\n💡 已在第一列成功附加【From】文件名来源列！")
     except Exception as e:
         messagebox.showerror("错误", f"合并失败:\n{str(e)}")
-
-
-
+        
 root.update_idletasks()
 try:
     fonts = list(tkfont.families())
@@ -4510,7 +4632,7 @@ def run_term_check():
         mode = tc_match_mode.get()
         c_range = tc_ctx_range.get()
         strict_mode = tc_strict_ctx.get() == 1
-        sym_list = [s.strip() for s in tc_strict_syms.get().split('|') if s.strip()]
+        ctx_regex_pat = tc_strict_syms.get().strip()
         ign_case = tc_ign_case.get() == 1
         ign_count = tc_ign_count.get() == 1
         flags = re.IGNORECASE if ign_case else 0
@@ -4606,15 +4728,21 @@ def run_term_check():
                 # 2. 构建上下文
                 start_idx, end_idx = i, i
                 if c_range > 0:
-                    if strict_mode:
+                    if strict_mode and ctx_regex_pat:
+                        # 向上追溯：检查上一句的末尾是否符合连贯正则
                         for k in range(i-1, max(-1, i-c_range-1), -1):
                             prev_txt = clean_xml(tgt_blocks[k]['Text']).strip()
-                            if any(prev_txt.endswith(sym) for sym in sym_list): start_idx = k
-                            else: break
+                            try:
+                                if re.search(ctx_regex_pat, prev_txt): start_idx = k
+                                else: break
+                            except: break
+                        # 向下追溯：检查本句(及顺延句)的末尾是否符合连贯正则
                         for k in range(i, min(len(tgt_blocks)-1, i+c_range)):
                             curr_txt = clean_xml(tgt_blocks[k]['Text']).strip()
-                            if any(curr_txt.endswith(sym) for sym in sym_list): end_idx = k + 1
-                            else: break
+                            try:
+                                if re.search(ctx_regex_pat, curr_txt): end_idx = k + 1
+                                else: break
+                            except: break
                     else:
                         start_idx = max(0, i - c_range)
                         end_idx = min(len(tgt_blocks) - 1, i + c_range)
@@ -4730,7 +4858,7 @@ tc_tgt_col = tk.StringVar(value="id_ID")
 tc_match_mode = tk.IntVar(value=1) # 0: ID匹配, 1: ID+时间轴匹配
 tc_ctx_range = tk.IntVar(value=1)
 tc_strict_ctx = tk.IntVar(value=1)
-tc_strict_syms = tk.StringVar(value=",|-|...")
+tc_strict_syms = tk.StringVar(value=r"([,\-]$|\.\.\.$|[^.。!?！？”\"';；]$)")
 tc_ign_case = tk.IntVar(value=1)
 tc_ign_count = tk.IntVar(value=0)
 
@@ -4780,8 +4908,9 @@ f_tc_ctx.grid(row=1, column=0, columnspan=3, sticky="w", pady=(10,0))
 ttk.Label(f_tc_ctx, text="上下文查找范围 (单侧扩展行数):").pack(side=tk.LEFT)
 tk.Spinbox(f_tc_ctx, from_=0, to=10, textvariable=tc_ctx_range, width=5).pack(side=tk.LEFT, padx=5)
 
-ttk.Checkbutton(f_tc_ctx, text="启用上下文严格阻断模式  |  阻断断句符号(用|分隔):", variable=tc_strict_ctx).pack(side=tk.LEFT)
-ttk.Entry(f_tc_ctx, textvariable=tc_strict_syms, width=15).pack(side=tk.LEFT, padx=5)
+ttk.Checkbutton(f_tc_ctx, text="启用严格连贯模式 | 连贯条件(满足正则即连入下文):", variable=tc_strict_ctx).pack(side=tk.LEFT)
+ttk.Entry(f_tc_ctx, textvariable=tc_strict_syms, width=28).pack(side=tk.LEFT, padx=5)
+ttk.Label(f_tc_ctx, text="(只要正则匹配成功，句子即算作连贯。支持复杂组合逻辑)", foreground="gray").pack(side=tk.LEFT)
 
 f_tc_4 = ttk.LabelFrame(tab_term_check, text="术语校验规则", padding=10)
 f_tc_4.pack(fill=tk.X, pady=5)
@@ -4843,6 +4972,336 @@ ttk.Button(tab_xlsx_merge, text="⚡ 开始执行批量合并", command=run_xlsx
 
 ttk.Label(tab_xlsx_merge, text="* 提示：本功能会以文件名排序合并文件。第一个文件将保留第一行作为表头，其余所有文件会自动剔除第一行再拼接。", foreground="gray").grid(row=3, column=0, columnspan=3)
 # ========================================================
+
+# ================= TAB 15: 配音物料处理与 DeepL 翻译 =================
+tab_dubbing = ttk.Frame(nb_ass, padding=20)
+nb_ass.add(tab_dubbing, text=" 🎙️ 配音物料处理与翻译 ")
+tab_dubbing.columnconfigure(1, weight=1)
+
+# --- 变量区 ---
+dub_info_dir = tk.StringVar()
+dub_char_dir = tk.StringVar()
+dub_tpl_file = tk.StringVar() # 新增：模板文件路径
+dub_out_dir = tk.StringVar()
+
+trans_in_file = tk.StringVar()
+trans_out_file = tk.StringVar()
+# 改为直接使用完整 URL 变量
+deepl_api_url = tk.StringVar(value="https://api.deeplx.org/0Zd0vmBeMPUOCoBd1QKZecgr3rFdrNCirAXBREd6pZg/translate")
+deepl_tgt_lang = tk.StringVar(value="EN") # DeepLX 通常使用 EN 而不是 EN-US
+# 新增：用于自定义底部的固定文案
+dub_note_var = tk.StringVar(value="- 音色匹配：主要角色需试音确认\n- 字幕同步：字幕与人声匹配，严格对齐时间轴（需提供修改后的字幕文件）\n- 情感表达：情色戏有感染力，高潮戏有爆发力，日常对话自然\n- 反应声：喘息声、哭泣、笑声、喊叫声等需真实到位")
+dub_sample_var = tk.StringVar(value="无需试音，提供样音")
+# --- 核心函数 2：DeepL/DeepLX XLSX 深度翻译 ---
+def run_xlsx_translation():
+    in_file = trans_in_file.get().strip()
+    out_file = trans_out_file.get().strip()
+    api_url = deepl_api_url.get().strip()
+    t_lang = deepl_tgt_lang.get().strip()
+    
+    if not all([in_file, out_file, api_url, t_lang]):
+        return messagebox.showwarning("警告", "请填写完整的文件路径、API 请求地址及目标语言！")
+        
+    try:
+        import requests
+        import openpyxl
+        import time
+        
+        # 加载 Excel，收集所有需要翻译的非空纯文本
+        wb = openpyxl.load_workbook(in_file)
+        unique_texts = set()
+        
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    val = cell.value
+                    if isinstance(val, str) and val.strip() and not val.startswith('='):
+                        unique_texts.add(val.strip())
+                        
+        if not unique_texts: return messagebox.showinfo("提示", "表格中没有检测到需要翻译的文本！")
+        
+        text_list = list(unique_texts)
+        trans_dict = {}
+        
+        # UI 反馈处理进度
+        btn_trans.config(text=f"翻译中 (共 {len(text_list)} 条)，请耐心等待...", state=tk.DISABLED)
+        root.update()
+        
+        # 逐条发送请求（为了完美兼容 DeepLX 的单句请求规范）
+        for i, text in enumerate(text_list):
+            payload = {
+                'text': text, 
+                'source_lang': 'auto',
+                'target_lang': t_lang
+            }
+            
+            res = requests.post(api_url, json=payload, timeout=15)
+            if res.status_code != 200:
+                raise Exception(f"接口报错 (状态码 {res.status_code}):\n{res.text}")
+            
+            data = res.json()
+            
+            # 智能解析：同时兼容官方 DeepL 和 第三方 DeepLX 的数据结构
+            if 'translations' in data: # 官方 DeepL 格式
+                trans_dict[text] = data['translations'][0]['text']
+            elif 'data' in data:       # 常见 DeepLX 格式
+                trans_dict[text] = str(data['data'])
+            elif 'text' in data:       # 其他代理变体格式
+                trans_dict[text] = str(data['text'])
+            else:
+                trans_dict[text] = text
+                
+            # 增加一个极短的延迟(0.1秒)，防止被免费节点判定为攻击而封锁 IP
+            time.sleep(0.1)
+                
+        # 将翻译好的文本映射回 Excel
+        for ws in wb.worksheets:
+            for row in ws.iter_rows():
+                for cell in row:
+                    val = cell.value
+                    if isinstance(val, str) and val.strip() and not val.startswith('='):
+                        cell.value = trans_dict.get(val.strip(), val)
+                        
+        wb.save(out_file)
+        messagebox.showinfo("完成", f"翻译完毕！\n共深度翻译了 {len(text_list)} 条唯一文本，源文件格式及插入图片已完美保留。")
+    except Exception as e:
+        messagebox.showerror("翻译失败", f"错误详情:\n{str(e)}")
+    finally:
+        btn_trans.config(text="🌐 开始执行 XLSX 深度翻译", state=tk.NORMAL)
+
+# --- 核心函数 1：配音物料表批量合并（严格对应纯净版模板格式） ---
+def run_dubbing_merge():
+    i_dir = dub_info_dir.get().strip()
+    c_dir = dub_char_dir.get().strip()
+    t_file = dub_tpl_file.get().strip()
+    o_dir = dub_out_dir.get().strip()
+    
+    if not all([i_dir, c_dir, t_file, o_dir]):
+        return messagebox.showwarning("警告", "请完整选择信息表、角色表、模板文件和输出文件夹！")
+        
+    try:
+        import openpyxl
+        from copy import copy
+        import io
+        from openpyxl.drawing.image import Image as xlImage
+        from openpyxl.styles import Border, Side, Font, Alignment
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.cell.rich_text import TextBlock, CellRichText
+        
+        # 定义宋体12号的基础样式与边框
+        ft_normal = Font(name='宋体', size=12)
+        ft_bold = Font(name='宋体', size=12, bold=True)
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        align_center = Alignment(vertical='center', wrap_text=True)
+        
+        # 定义用于富文本局部加粗的内联字体
+        inline_bold = InlineFont(rFont='宋体', sz=12, b=True)
+        inline_norm = InlineFont(rFont='宋体', sz=12, b=False)
+        
+        info_files = {f: os.path.join(i_dir, f) for f in os.listdir(i_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')}
+        char_files = {f: os.path.join(c_dir, f) for f in os.listdir(c_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')}
+        common_files = set(info_files.keys()).intersection(set(char_files.keys()))
+        
+        if not common_files: return messagebox.showwarning("警告", "两个文件夹中没有找到同名的 XLSX 文件！")
+        os.makedirs(o_dir, exist_ok=True)
+        processed_count = 0
+        
+        for file in common_files:
+            # ================= 1. 提取信息表 =================
+            wb_info = openpyxl.load_workbook(info_files[file], data_only=True)
+            ws_info = wb_info.active
+            info_dict = {}
+            for r in range(1, ws_info.max_row + 1):
+                k = str(ws_info.cell(r, 1).value or "").strip()
+                v = str(ws_info.cell(r, 2).value or "").strip()
+                if k: info_dict[k] = v
+            
+            # ================= 2. 提取角色表图片映射 =================
+            wb_char = openpyxl.load_workbook(char_files[file], data_only=True)
+            ws_char = wb_char.active
+            
+            img_map = {}
+            for img in getattr(ws_char, '_images', []):
+                try:
+                    r_idx = img.anchor._from.row + 1 
+                    img_map[r_idx] = img
+                except: pass
+
+            # ================= 3. 载入模板并注入数据 =================
+            wb_tpl = openpyxl.load_workbook(t_file)
+            ws_tpl = wb_tpl.active
+            
+            # 填入顶部信息 (A列，拼接内容，利用富文本完美保留标题加粗)
+            ws_tpl.cell(2, 1).value = CellRichText(TextBlock(inline_bold, "剧集名称："), TextBlock(inline_norm, info_dict.get('剧集名称', '')))
+            ws_tpl.cell(3, 1).value = CellRichText(TextBlock(inline_bold, "总集数："), TextBlock(inline_norm, info_dict.get('总集数', '')))
+            ws_tpl.cell(4, 1).value = CellRichText(TextBlock(inline_bold, "配音语言："), TextBlock(inline_norm, info_dict.get('配音语言', '')))
+            ws_tpl.cell(6, 1).value = CellRichText(TextBlock(inline_bold, "剧集梗概：\n"), TextBlock(inline_norm, info_dict.get('简介', '')))
+            
+            start_r = 7
+            
+            # 解除 start_r 行以下所有的合并单元格，防止清理时报错
+            merged_ranges = list(ws_tpl.merged_cells.ranges)
+            for m_range in merged_ranges:
+                if m_range.min_row >= start_r:
+                    ws_tpl.unmerge_cells(str(m_range))
+            
+            # 清理旧数据
+            for row in ws_tpl.iter_rows(min_row=start_r, max_row=ws_tpl.max_row):
+                for cell in row: 
+                    cell.value = None
+                    cell.border = None
+            
+            current_out_row = start_r
+            
+            # ================= 4. 遍历并写入角色表 =================
+            for r in range(2, ws_char.max_row + 1):
+                name = str(ws_char.cell(r, 1).value or "").strip()
+                if not name: continue
+                
+                identity = str(ws_char.cell(r, 3).value or "").strip()
+                gender = str(ws_char.cell(r, 4).value or "").strip()
+                age = str(ws_char.cell(r, 5).value or "").strip()
+                desc = str(ws_char.cell(r, 6).value or "").strip()
+                voice = str(ws_char.cell(r, 7).value or "").strip()
+                
+                # 构造富文本对象 (局部加粗的宋体)
+                text_blocks = [
+                    TextBlock(inline_bold, name),
+                    TextBlock(inline_norm, f"\n\n年龄：{age}\n身份：{identity}\n性格：{desc}\n声线：{voice}")
+                ]
+                
+                # 写入基本框架 (列A至G，即1至7)
+                ws_tpl.cell(current_out_row, 1, "") # 第1列：留空
+                ws_tpl.cell(current_out_row, 2, "") # 第2列：留空
+                c_info = ws_tpl.cell(current_out_row, 3) # 第3列：角色信息富文本
+                c_info.value = CellRichText(*text_blocks)
+                
+                # 给第1至7列全部刷上宋体、居中和边框
+                for col_idx in range(1, 8):
+                    c = ws_tpl.cell(current_out_row, col_idx)
+                    c.border = thin_border
+                    c.alignment = align_center
+                    if col_idx != 3: c.font = ft_normal
+                
+                # 规则：角色信息占4个单元格横向合并 (C, D, E, F)
+                ws_tpl.merge_cells(start_row=current_out_row, start_column=3, end_row=current_out_row, end_column=6)
+                
+                # 图片安全提取并放置在第7列 (G列)
+                if r in img_map:
+                    try:
+                        old_img = img_map[r]
+                        img_bytes = old_img._data() if hasattr(old_img, '_data') else old_img.ref.getvalue()
+                        new_img = xlImage(io.BytesIO(img_bytes))
+                        
+                        # ====== 核心修复：智能等比例缩放图片，完美限制在单元格内部 ======
+                        orig_w, orig_h = old_img.width, old_img.height
+                        # 设定单元格边界的最大容纳像素 (留出一点边距防贴边)
+                        max_w, max_h = 100, 135 
+                        if orig_w > 0 and orig_h > 0:
+                            # 计算缩放比例，以最长的一边为准进行等比缩小
+                            ratio = min(max_w / orig_w, max_h / orig_h)
+                            new_img.width = int(orig_w * ratio)
+                            new_img.height = int(orig_h * ratio)
+                        # ==================================================================
+                        
+                        ws_tpl.add_image(new_img, f"G{current_out_row}")
+                    except: pass
+                    
+                # 根据文本行数动态撑开行高
+                line_count = 6 + (len(desc)//20) 
+                # 确保行高至少有 110 磅 (约146像素)，足以将 135 像素高的图片完美包裹其中
+                ws_tpl.row_dimensions[current_out_row].height = max(110, line_count * 18)
+                current_out_row += 1
+                
+            # ================= 5. 写入底部注意事项 =================
+            # 规则：占5个单元格横向合并
+            ws_tpl.cell(current_out_row, 1, "配音注意事项").font = ft_bold  # 修复：恢复 A 列标题加粗
+            ws_tpl.cell(current_out_row, 2, dub_note_var.get().strip()).font = ft_normal
+            for col_idx in range(1, 7):
+                c = ws_tpl.cell(current_out_row, col_idx)
+                c.border = thin_border
+                c.alignment = align_center
+            ws_tpl.merge_cells(start_row=current_out_row, start_column=2, end_row=current_out_row, end_column=6)
+            ws_tpl.row_dimensions[current_out_row].height = 85
+            
+            ws_tpl.cell(current_out_row + 1, 1, "试样集数").font = ft_bold  # 修复：恢复 A 列标题加粗
+            ws_tpl.cell(current_out_row + 1, 2, dub_sample_var.get().strip()).font = ft_normal
+            for col_idx in range(1, 7):
+                c = ws_tpl.cell(current_out_row + 1, col_idx)
+                c.border = thin_border
+                c.alignment = align_center
+            ws_tpl.merge_cells(start_row=current_out_row + 1, start_column=2, end_row=current_out_row + 1, end_column=6)
+            ws_tpl.row_dimensions[current_out_row + 1].height = 30
+            
+            # 保存
+            out_name = f"{os.path.splitext(file)[0]}_前期物料表.xlsx"
+            wb_tpl.save(os.path.join(o_dir, out_name))
+            processed_count += 1
+            
+        messagebox.showinfo("完成", f"批量合并完成！\n共生成了 {processed_count} 份纯净版物料表。\n宋体12号、加粗样式及图片均已完美贴合模板格式！")
+    except Exception as e:
+        messagebox.showerror("错误", f"处理过程中发生错误:\n{str(e)}")
+
+# --- UI 布局区 ---
+# 模块 1：配音物料合并
+f_dub = ttk.LabelFrame(tab_dubbing, text=" 📂 第一步：批量合并 [配音信息表] 与 [配音角色表] ", padding=15)
+f_dub.pack(fill=tk.X, pady=10)
+f_dub.columnconfigure(1, weight=1)
+
+ttk.Label(f_dub, text="配音信息表 文件夹:").grid(row=0, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_info_dir).grid(row=0, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_info_dir, "选择配音信息表文件夹")).grid(row=0, column=2, padx=5)
+
+ttk.Label(f_dub, text="配音角色表 文件夹:").grid(row=1, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_char_dir).grid(row=1, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_char_dir, "选择配音角色表文件夹")).grid(row=1, column=2, padx=5)
+
+# === 新增：选择模板文件 ===
+ttk.Label(f_dub, text="严格对齐排版的 模板文件:").grid(row=2, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_tpl_file).grid(row=2, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: dub_tpl_file.set(filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")]))).grid(row=2, column=2, padx=5)
+
+ttk.Label(f_dub, text="最终生成的物料表 输出至:").grid(row=3, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_out_dir).grid(row=3, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_out_dir, "选择输出文件夹")).grid(row=3, column=2, padx=5)
+
+# === 新增：自定义配音要求 ===
+ttk.Label(f_dub, text="配音注意事项:").grid(row=4, column=0, sticky="ne", pady=5)
+tk.Text(f_dub, width=65, height=4).grid(row=4, column=1, columnspan=2, sticky="ew", padx=10, pady=5)
+f_dub.children[list(f_dub.children.keys())[-1]].insert("1.0", dub_note_var.get())
+f_dub.children[list(f_dub.children.keys())[-1]].bind("<KeyRelease>", lambda e: dub_note_var.set(e.widget.get("1.0", tk.END)))
+
+ttk.Label(f_dub, text="试样集数 要求:").grid(row=5, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_sample_var).grid(row=5, column=1, columnspan=2, sticky="ew", padx=10, pady=5)
+
+ttk.Button(f_dub, text="⚡ 按照模板严格合并生成物料表", command=run_dubbing_merge, style='TButton').grid(row=6, column=0, columnspan=3, pady=15, ipadx=20)
+
+# 模块 2：DeepL 无损翻译
+f_trans = ttk.LabelFrame(tab_dubbing, text=" 🌐 第二步：DeepL API 无损排版翻译 (支持任意 Excel) ", padding=15)
+f_trans.pack(fill=tk.X, pady=10)
+f_trans.columnconfigure(1, weight=1)
+
+ttk.Label(f_trans, text="需翻译的原始文件 (Excel):").grid(row=0, column=0, sticky="e", pady=5)
+ttk.Entry(f_trans, textvariable=trans_in_file).grid(row=0, column=1, sticky="ew", padx=10)
+ttk.Button(f_trans, text="浏览...", command=lambda: trans_in_file.set(filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")]))).grid(row=0, column=2, padx=5)
+
+ttk.Label(f_trans, text="翻译后另存为 (Excel):").grid(row=1, column=0, sticky="e", pady=5)
+ttk.Entry(f_trans, textvariable=trans_out_file).grid(row=1, column=1, sticky="ew", padx=10)
+ttk.Button(f_trans, text="浏览...", command=lambda: ask_save_file(trans_out_file, "保存翻译后文件", [("Excel", "*.xlsx")], ".xlsx")).grid(row=1, column=2, padx=5)
+
+f_api = ttk.Frame(f_trans)
+f_api.grid(row=2, column=0, columnspan=3, sticky="w", pady=(15, 5))
+ttk.Label(f_api, text="DeepL / DeepLX 请求地址:").pack(side=tk.LEFT, padx=(0, 5))
+ttk.Entry(f_api, textvariable=deepl_api_url, width=65).pack(side=tk.LEFT)
+
+f_lang = ttk.Frame(f_trans)
+f_lang.grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
+ttk.Label(f_lang, text="目标语言 (如 EN, ZH, JA, KO):").pack(side=tk.LEFT, padx=(0, 5))
+ttk.Combobox(f_lang, textvariable=deepl_tgt_lang, values=["EN", "ZH", "JA", "KO", "ID", "ES", "RU"], width=10).pack(side=tk.LEFT)
+
+btn_trans = ttk.Button(f_trans, text="🌐 开始执行 XLSX 深度翻译", command=run_xlsx_translation, style='TButton')
+btn_trans.grid(row=4, column=0, columnspan=3, pady=15, ipadx=20)
+# ===============================================================
 
 update_m0_ui()
 update_m8_ui()

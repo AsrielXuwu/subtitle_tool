@@ -8,6 +8,7 @@ import json
 import zipfile
 import math
 import platform
+import translators as ts
 
 # ======= 新增：用于术语检查报告的富文本导出 =======
 try:
@@ -29,6 +30,47 @@ except ImportError:
 
 # ======= 新增：全局 ASS 内存暂存字典 =======
 global_ass_memory_cache = {}
+
+def safe_punct_convert(text, mode):
+    """
+    安全的字幕标点转换引擎（完美避开 ASS/SRT 的控制标签）
+    mode: 1 (半转全去空格), 2 (全转半补空格)
+    """
+    if not text or mode not in (1, 2):
+        return text
+        
+    # 利用正则切割，提取真正的文本部分，完美避开 ASS的 {...} 和 SRT的 <...> 标签
+    parts = re.split(r'(\{[^}]*\}|<[^>]*>)', text)
+    
+    for i in range(0, len(parts), 2):
+        txt = parts[i]
+        if not txt: continue
+        
+        if mode == 1:  # ====== 半角 转 全角 ======
+            txt = txt.replace('...', '…')
+            trans = str.maketrans(",.?!:;()[]", "，。？！：；（）【】")
+            txt = txt.translate(trans)
+            txt = re.sub(r'"([^"]*)"', r'“\1”', txt)
+            txt = re.sub(r"'([^']*)'", r'‘\1’', txt)
+            # 删除全角标点后面多余的空格
+            txt = re.sub(r'([，。？！：；）】”’…])\s+', r'\1', txt)
+            
+        elif mode == 2: # ====== 全角 转 半角 ======
+            txt = txt.replace('…', '...')
+            txt = txt.replace('—', '-').replace('——', '--')
+            txt = txt.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+            trans = str.maketrans("，。？！：；（）【】", ",.?!:;()[]")
+            txt = txt.translate(trans)
+            
+            # 智能补空格：如果半角标点后面跟着【非空格、非其他标点】的正常字符，补充一个空格
+            # 自动排除了省略号、横杠、书名号、前括号和引号等不需要加空格的特例
+            txt = re.sub(r'([,\?\!\:\;\)\]])(?=[^\s,\?\!\:\;\"\'\-\.《》\n])', r'\1 ', txt)
+            # 单独处理句号（排除三个点...的情况）
+            txt = re.sub(r'(?<!\.)\.(?!\.)(?=[^\s,\?\!\:\;\"\'\-\.《》\n])', r'. ', txt)
+            
+        parts[i] = txt
+        
+    return "".join(parts)
 
 # ====== 新增：全局复用的滚动标签页构造器 ======
 def create_scrollable_tab(notebook, text, padding=10):
@@ -3068,6 +3110,17 @@ ttk.Label(etab_f4, text="需要应用正则替换的列:").grid(row=1, column=0,
 cb_f4_tgt = ttk.Combobox(etab_f4, textvariable=f4_target_col, values=ASS_COLS, width=15, state="readonly")
 cb_f4_tgt.grid(row=1, column=1, sticky="w", padx=5)
 
+# === 新增：标点符号智能转换区域 ===
+f4_punct_mode = tk.IntVar(value=0)
+f_punct = ttk.Frame(etab_f4)
+# 把它放置在需要替换的列的下拉框右边
+f_punct.grid(row=1, column=2, columnspan=2, sticky="w") 
+ttk.Label(f_punct, text="字幕文本标点转换:").pack(side=tk.LEFT, padx=(15, 5))
+ttk.Radiobutton(f_punct, text="不转换", variable=f4_punct_mode, value=0).pack(side=tk.LEFT)
+ttk.Radiobutton(f_punct, text="半转全(删空格)", variable=f4_punct_mode, value=1).pack(side=tk.LEFT, padx=5)
+ttk.Radiobutton(f_punct, text="全转半(补空格)", variable=f4_punct_mode, value=2).pack(side=tk.LEFT)
+# ==================================
+
 ttk.Label(etab_f4, text="正则替换规则:").grid(row=2, column=0, sticky="ne", pady=5)
 f4_regex_text = tk.Text(etab_f4, height=3, width=45, font=('Arial', 9))
 f4_regex_text.grid(row=2, column=1, columnspan=3, sticky="w", padx=5, pady=5)
@@ -3764,8 +3817,7 @@ def execute_ass_editor(stage_only=False):
         regex_rules.append((pat, repl_python))
 
     for file in files:
-        if mode == 4 and file != m7_file_var.get().strip(): continue
-        
+        # 【修复1】：删除了 mode 4 的强制跳过，让所有文件都能走完最后的保存流程
         in_path, out_path = os.path.join(i_dir, file), os.path.join(o_dir, file)
         
         # ====== 内存优先加载 ======
@@ -3812,11 +3864,28 @@ def execute_ass_editor(stage_only=False):
                             if not find_only:
                                 current_val = re.sub(pat, repl, current_val)
                                 
-                    if matched_parts:
+                    # ====== 在上面这段 for 循环下方，直接粘贴插入 ======
+                    punct_mode = f4_punct_mode.get()
+                    punct_changed = False
+                    if not find_only and punct_mode in (1, 2):
+                        if tgt_idx == 2: # 如果用户正好选了处理文本列
+                            new_txt = safe_punct_convert(current_val, punct_mode)
+                            if new_txt != current_val:
+                                punct_changed = True; current_val = new_txt
+                        else: # 无论用户选了什么列，都在最后单独清洗一遍文本列 (p[2])
+                            new_txt = safe_punct_convert(p[2], punct_mode)
+                            if new_txt != p[2]:
+                                punct_changed = True; p[2] = new_txt
+                    # ====================================================
+
+                    # 覆盖原来的 if matched_parts:
+                    if matched_parts or punct_changed:
                         if find_only:
-                            if gen_report: global_report_data.append([file, p[1], p[2], orig_tgt, " | ".join(matched_parts)])
+                            if gen_report and matched_parts:
+                                global_report_data.append([file, p[1], p[2], orig_tgt, " | ".join(matched_parts)])
                         else:
-                            if gen_report: global_report_data.append([file, p[1], p[2], orig_tgt, " | ".join(matched_parts), current_val])
+                            if gen_report:
+                                global_report_data.append([file, p[1], p[2], orig_tgt, " | ".join(matched_parts) if matched_parts else "[仅执行了标点转换]", current_val])
                             p[tgt_idx] = current_val
                         
                 block['ID'], block['Timeline'], block['Text'] = p[0], p[1], p[2]
@@ -4052,12 +4121,29 @@ def execute_ass_editor(stage_only=False):
                                     if not find_only:
                                         current_val = re.sub(pat, repl, current_val)
                                         
-                            if matched_parts:
+                            # ====== 在上面这段 for 循环下方，直接粘贴插入 ======
+                            punct_mode = f4_punct_mode.get()
+                            punct_changed = False
+                            if not find_only and punct_mode in (1, 2):
+                                if tgt_idx == 9: # 如果用户选的是文本列
+                                    new_txt = safe_punct_convert(current_val, punct_mode)
+                                    if new_txt != current_val:
+                                        punct_changed = True; current_val = new_txt
+                                else: # 单独清洗 ASS 的文本列 (p[9])
+                                    new_txt = safe_punct_convert(p[9], punct_mode)
+                                    if new_txt != p[9]:
+                                        punct_changed = True; p[9] = new_txt
+                            # ====================================================
+
+                            # 覆盖原来的 if matched_parts:
+                            if matched_parts or punct_changed:
                                 timeline = f"{p[1]} --> {p[2]}"
                                 if find_only:
-                                    if gen_report: global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts)])
+                                    if gen_report and matched_parts:
+                                        global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts)])
                                 else:
-                                    if gen_report: global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts), current_val])
+                                    if gen_report:
+                                        global_report_data.append([file, timeline, p[9], orig_tgt, " | ".join(matched_parts) if matched_parts else "[仅执行了标点转换]", current_val])
                                     p[tgt_idx] = current_val
                         
                         # ====== 致命 Bug 修复：把处理完（或未处理）的字幕行塞回列表中 ======
@@ -4067,40 +4153,45 @@ def execute_ass_editor(stage_only=False):
             ev_lines = new_ev
         # ====== 功能4 ======
         elif mode == 4:
-            sel_items = m7_tree.selection()
-            if not sel_items: return messagebox.showwarning("警告", "请在下方列表中点击选择你要修改的字幕行！")
-            sel_indices = [int(m7_tree.item(item, 'values')[0]) for item in sel_items]
-            
-            new_style_name = edit_m7_target_var.get().strip()
-            if not new_style_name: return messagebox.showwarning("警告", "请输入赋予的新样式名称！")
-            
-            new_line = ""
-            if edit_m7_mode.get() == 0:
-                new_line = build_ass_style_line(new_style_name, e_m7_font.get(), e_m7_size.get(), e_m7_col.get(), e_m7_ocol.get(), e_m7_mv.get(), e_m7_mlr.get(), e_m7_outl.get(), e_m7_align.get(), e_m7_shad.get(), e_m7_bold.get(), e_m7_ita.get(), e_m7_alpha.get(), e_m7_outalpha.get())
-            else:
-                rp, rs = m7_ref_path.get(), m7_ref_style.get()
-                if not os.path.exists(rp) or not rs: return messagebox.showwarning("警告", "请正确提供参考文件和样式！")
-                ref_dict = scan_all_styles_from_ass(rp)
-                if rs not in ref_dict: return messagebox.showwarning("错误", "参考中没找到该样式")
-                new_line = rename_style_line(ref_dict[rs], new_style_name)
-                if e_m7_font_mode.get() == 1: new_line = replace_font_in_style(new_line, e_m7_override_font.get())
+            # 【修复2】：只对当前在下拉框里选中的文件，应用树状图里的选中修改
+            if file == m7_file_var.get().strip():
+                sel_items = m7_tree.selection()
+                if not sel_items: return messagebox.showwarning("警告", "请在下方列表中点击选择你要修改的字幕行！")
+                sel_indices = [int(m7_tree.item(item, 'values')[0]) for item in sel_items]
                 
-            rep = False
-            for i, sl in enumerate(s_lines):
-                if sl.startswith('Style:') and sl.split('Style:')[1].split(',')[0].strip() == new_style_name:
-                    s_lines[i] = new_line; rep = True
-            if not rep: s_lines.append(new_line)
-            
-            new_ev = []
-            for i, ev in enumerate(ev_lines):
-                if i in sel_indices and ev.startswith('Dialogue:'):
-                    p = ev.split(',', 9)
-                    if len(p) >= 10:
-                        p[3] = new_style_name
-                        new_ev.append(",".join(p))
+                new_style_name = edit_m7_target_var.get().strip()
+                if not new_style_name: return messagebox.showwarning("警告", "请输入赋予的新样式名称！")
+                
+                new_line = ""
+                if edit_m7_mode.get() == 0:
+                    new_line = build_ass_style_line(new_style_name, e_m7_font.get(), e_m7_size.get(), e_m7_col.get(), e_m7_ocol.get(), e_m7_mv.get(), e_m7_mlr.get(), e_m7_outl.get(), e_m7_align.get(), e_m7_shad.get(), e_m7_bold.get(), e_m7_ita.get(), e_m7_alpha.get(), e_m7_outalpha.get())
+                else:
+                    rp, rs = m7_ref_path.get(), m7_ref_style.get()
+                    if not os.path.exists(rp) or not rs: return messagebox.showwarning("警告", "请正确提供参考文件和样式！")
+                    ref_dict = scan_all_styles_from_ass(rp)
+                    if rs not in ref_dict: return messagebox.showwarning("错误", "参考中没找到该样式")
+                    new_line = rename_style_line(ref_dict[rs], new_style_name)
+                    if e_m7_font_mode.get() == 1: new_line = replace_font_in_style(new_line, e_m7_override_font.get())
+                    
+                rep = False
+                for i, sl in enumerate(s_lines):
+                    if sl.startswith('Style:') and sl.split('Style:')[1].split(',')[0].strip() == new_style_name:
+                        s_lines[i] = new_line; rep = True
+                if not rep: s_lines.append(new_line)
+                
+                new_ev = []
+                for i, ev in enumerate(ev_lines):
+                    if i in sel_indices and ev.startswith('Dialogue:'):
+                        p = ev.split(',', 9)
+                        if len(p) >= 10:
+                            p[3] = new_style_name
+                            new_ev.append(",".join(p))
+                        else: new_ev.append(ev)
                     else: new_ev.append(ev)
-                else: new_ev.append(ev)
-            ev_lines = new_ev
+                ev_lines = new_ev
+            else:
+                # 【核心】：如果是暂存过的其他文件，什么都不做，带着它原本的内存数据直接进入保存环节！
+                pass
 
         # ====== 功能5: 条件定位替换样式 ======
         elif mode == 5:
@@ -4972,6 +5063,508 @@ ttk.Button(tab_xlsx_merge, text="⚡ 开始执行批量合并", command=run_xlsx
 
 ttk.Label(tab_xlsx_merge, text="* 提示：本功能会以文件名排序合并文件。第一个文件将保留第一行作为表头，其余所有文件会自动剔除第一行再拼接。", foreground="gray").grid(row=3, column=0, columnspan=3)
 # ========================================================
+
+# ================= TAB 15: 配音物料处理与 DeepL 翻译 =================
+tab_dubbing = create_scrollable_tab(nb_other, " 配音物料处理 ", padding=20)
+tab_dubbing.columnconfigure(1, weight=1)
+
+# --- 变量区 ---
+dub_info_dir = tk.StringVar()
+dub_char_dir = tk.StringVar()
+dub_tpl_file = tk.StringVar() # 新增：模板文件路径
+dub_out_dir = tk.StringVar()
+
+trans_in_file = tk.StringVar()
+trans_out_file = tk.StringVar()
+# 改为直接使用完整 URL 变量
+deepl_api_url = tk.StringVar(value="")
+deepl_tgt_lang = tk.StringVar(value="EN") # DeepLX 通常使用 EN 而不是 EN-US
+
+# === 新增一个用于记录是否使用网页版请求的变量 ===
+trans_service_mode = tk.StringVar(value="自定义 API (需填下方地址)")
+
+# 新增：用于自定义底部的固定文案
+dub_note_var = tk.StringVar(value="- 音色匹配：主要角色需试音确认\n- 字幕同步：字幕与人声匹配，严格对齐时间轴（需提供修改后的字幕文件）\n- 情感表达：情色戏有感染力，高潮戏有爆发力，日常对话自然\n- 反应声：喘息声、哭泣、笑声、喊叫声等需真实到位")
+dub_sample_var = tk.StringVar(value="无需试音，提供样音")
+
+# === 新增：控制翻译运行状态的全局变量 ===
+trans_is_running = tk.BooleanVar(value=False)
+
+def stop_xlsx_translation():
+    if trans_is_running.get():
+        trans_is_running.set(False)
+        btn_trans_stop.config(state=tk.DISABLED, text="正在终止...")
+# ======================================
+
+# --- 核心函数 2：DeepL/DeepLX XLSX 深度翻译 (多线程防卡死版) ---
+def run_xlsx_translation():
+    in_file = trans_in_file.get().strip()
+    out_file = trans_out_file.get().strip()
+    api_url = deepl_api_url.get().strip()
+    t_lang = deepl_tgt_lang.get().strip()
+    
+    service_mode = trans_service_mode.get()
+    use_custom_api = (service_mode == "自定义 API (需填下方地址)")
+    
+    if not all([in_file, out_file, t_lang]):
+        return messagebox.showwarning("警告", "请完整填写输入/输出文件路径及目标语言！")
+    if use_custom_api and not api_url:
+        return messagebox.showwarning("警告", "请填写API请求地址，或在上方选择免配置的网页翻译引擎！")
+        
+    # 定义一个后台打工函数，所有的耗时操作都在这里面进行
+    def translation_worker():
+        try:
+            import requests
+            import openpyxl
+            import time
+            
+            # 加载 Excel
+            wb = openpyxl.load_workbook(in_file)
+            unique_texts = set()
+            
+            for ws in wb.worksheets:
+                for row in ws.iter_rows():
+                    for cell in row:
+                        val = cell.value
+                        if isinstance(val, str) and val.strip() and not val.startswith('='):
+                            unique_texts.add(val.strip())
+                            
+            if not unique_texts: 
+                # 使用 root.after 跨线程安全地调用界面弹窗
+                root.after(0, lambda: messagebox.showinfo("提示", "表格中没有检测到需要翻译的文本！"))
+                return
+            
+            text_list = list(unique_texts)
+            trans_dict = {}
+            total = len(text_list)
+            
+           # 逐条发送请求
+            for i, text in enumerate(text_list):
+                # ====== 新增：中断检测与终止输出 ======
+                if not trans_is_running.get():
+                    import os
+                    # 发现被按下停止键，立即清理刚复制出来的中间文件，拒绝输出残缺文件
+                    if os.path.exists(out_file):
+                        try: os.remove(out_file)
+                        except: pass
+                    root.after(0, lambda: messagebox.showwarning("已终止", "翻译已被手动停止！\n后续流程已中断，并撤销了输出文件。"))
+                    return # 直接一刀切断后续的所有执行，跳出线程
+                # ====================================
+
+                root.after(0, lambda curr=i: btn_trans.config(text=f"翻译中... ( {curr} / {total} )，请勿关闭软件"))
+
+                print(f"\n[{i+1}/{total}] 准备翻译原文: {text}")
+                
+                if service_mode == "Google 原生网页爬虫 (无需API)":
+                    # ============ 模式 B：纯 HTML 网页爬虫 ============
+                    t_lang_g = t_lang.lower()
+                    if t_lang_g == "zh": t_lang_g = "zh-CN"
+                    
+                    print(f" -> [纯网页爬虫] 目标语言: {t_lang_g}")
+                    
+                    # 访问真正的 Web 页面地址，而非任何 API 后端
+                    url = "https://translate.google.com/m"
+                    params = {
+                        "sl": "auto",
+                        "tl": t_lang_g,
+                        "q": text
+                    }
+                    headers = {
+                        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+                    }
+                    
+                    res = requests.get(url, params=params, headers=headers, timeout=15)
+                    print(f" -> [纯网页响应] 状态码: {res.status_code}")
+                    
+                    if res.status_code != 200:
+                        raise Exception(f"网页请求被拦截 (状态码 {res.status_code})")
+                    
+                    try:
+                        import re
+                        import html as html_lib
+                        
+                        # 纯正爬虫逻辑：在 HTML 源码中寻找存放翻译结果的 <div> 容器
+                        html_text = res.text
+                        match = re.search(r'<div[^>]*class="[^"]*result-container[^"]*"[^>]*>(.*?)</div>', html_text, re.IGNORECASE | re.DOTALL)
+                        
+                        if match:
+                            raw_result = match.group(1)
+                            # 还原网页中的换行标签
+                            raw_result = re.sub(r'<br\s*/?>', '\n', raw_result, flags=re.IGNORECASE)
+                            # 还原 HTML 实体符号（例如把 &#39; 还原成单引号）
+                            translated_text = html_lib.unescape(raw_result)
+                            
+                            trans_dict[text] = translated_text
+                            print(f" -> [HTML抠取结果]: {trans_dict[text][:50]}...")
+                        else:
+                            print(f" -> [解析失败] 未在网页中找到 result-container，可能网页结构已改变。")
+                            trans_dict[text] = text
+                    except Exception as e:
+                        print(f" -> [爬虫崩溃] 正则解析异常: {str(e)}")
+                        trans_dict[text] = text # 兜底保留原文
+                        
+                    # 真正的爬虫必须伪装人类浏览速度，加入1秒延迟防止触发验证码
+                    time.sleep(1)
+                elif service_mode == "Bing 翻译接口 (translators库)":
+                    # ============ 模式 C：基于 translators 库的纯净调用 ============
+                    t_lang_bing = t_lang.lower()
+                    if t_lang_bing == "zh": t_lang_bing = "zh-Hans"
+                    
+                    print(f" -> [Bing Translators 模式] 目标语言: {t_lang_bing}")
+                    
+                    try:
+                        import translators as ts
+                        
+                        # 直接调用库封装好的极简翻译接口，摒弃其他冗余内容处理
+                        result = ts.translate_text(text, translator='bing', to_language=t_lang_bing)
+                        
+                        if result:
+                            trans_dict[text] = str(result)
+                            print(f" -> [Bing 结果]: {trans_dict[text][:50]}...")
+                        else:
+                            print(" -> [Bing 警告] 翻译返回为空，保留原文")
+                            trans_dict[text] = text
+                            
+                    except ImportError:
+                        raise Exception("缺少核心依赖库！\n请先在系统命令行终端运行: pip install translators")
+                    except Exception as e:
+                        print(f" -> [Bing 翻译崩溃] 异常详情: {str(e)}")
+                        trans_dict[text] = text # 解析失败时保留原文兜底
+                        
+                    # 依然保留适当的延迟，防止高频触发 Bing 的临时 IP 封锁
+                    time.sleep(1)
+                elif service_mode == "Google 翻译接口 (translators库)":
+                    # ============ 新增模式：基于 translators 库的 Google 调用 ============
+                    # Google 的中文代码通常要求是 zh-CN 或 zh-TW
+                    t_lang_google = t_lang.lower()
+                    if t_lang_google == "zh": t_lang_google = "zh-CN"
+                    
+                    print(f" -> [Google Translators 模式] 目标语言: {t_lang_google}")
+                    
+                    try:
+                        import translators as ts
+                        
+                        # 调用 translators 库封装好的 Google 引擎
+                        result = ts.translate_text(text, translator='google', to_language=t_lang_google)
+                        
+                        if result:
+                            trans_dict[text] = str(result)
+                            print(f" -> [Google 结果]: {trans_dict[text][:50]}...")
+                        else:
+                            print(" -> [Google 警告] 翻译返回为空，保留原文")
+                            trans_dict[text] = text
+                            
+                    except ImportError:
+                        raise Exception("缺少核心依赖库！\n请先在系统命令行终端运行: pip install translators")
+                    except Exception as e:
+                        print(f" -> [Google 翻译崩溃] 异常详情: {str(e)}")
+                        trans_dict[text] = text # 解析失败时保留原文兜底
+                        
+                    # Google 相对宽容，但依然保留 1 秒延迟防止长期高频调用的临时风控
+                    time.sleep(1)
+            
+                else:
+                    # ============ 模式 C：自定义 API ============
+                    print(f" -> [自定义API 模式] 目标语言: {t_lang.upper()}")
+                    payload = {'text': text, 'source_lang': 'auto', 'target_lang': t_lang.upper()}
+                    res = requests.post(api_url, json=payload, timeout=15)
+                    
+                    print(f" -> [自定义API 响应] 状态码: {res.status_code}")
+                    if res.status_code != 200:
+                        raise Exception(f"API接口报错 (状态码 {res.status_code}):\n{res.text}")
+                    
+                    data = res.json()
+                    if 'translations' in data: trans_dict[text] = data['translations'][0]['text']
+                    elif 'data' in data: trans_dict[text] = str(data['data'])
+                    elif 'text' in data: trans_dict[text] = str(data['text'])
+                    else: trans_dict[text] = text
+                    
+                    print(f" -> [自定义API 结果]: {trans_dict[text]}")
+                    time.sleep(0.1)
+                    
+            # 进度：正在写入文件
+            root.after(0, lambda: btn_trans.config(text="正在生成带格式的 Excel 文件..."))
+            
+            for ws in wb.worksheets:
+                for row in ws.iter_rows():
+                    for cell in row:
+                        val = cell.value
+                        if isinstance(val, str) and val.strip() and not val.startswith('='):
+                            cell.value = trans_dict.get(val.strip(), val)
+                            
+            wb.save(out_file)
+            root.after(0, lambda: messagebox.showinfo("完成", f"翻译完毕！\n共深度翻译了 {total} 条唯一文本，源文件格式及插入图片已完美保留。"))
+            
+        except Exception as e:
+            root.after(0, lambda err=str(e): messagebox.showerror("翻译失败", f"错误详情:\n{err}"))
+        finally:
+            # 无论成功、报错还是中途被强行终止，最后都要将按钮恢复到初始状态
+            root.after(0, lambda: btn_trans.config(text="🌐 开始执行 XLSX 深度翻译", state=tk.NORMAL))
+            root.after(0, lambda: btn_trans_stop.config(text="⏹ 停止翻译", state=tk.DISABLED))
+            trans_is_running.set(False)
+
+    # ================= 主线程干的活 =================
+    trans_is_running.set(True) # 开启红绿灯状态
+    
+    btn_trans.config(text="正在读取并分析表格...", state=tk.DISABLED)
+    btn_trans_stop.config(state=tk.NORMAL) # 激活停止按钮
+    root.update()
+    
+    import threading
+    threading.Thread(target=translation_worker, daemon=True).start()
+    
+# --- 核心函数 1：配音物料表批量合并（严格对应纯净版模板格式） ---
+def run_dubbing_merge():
+    i_dir = dub_info_dir.get().strip()
+    c_dir = dub_char_dir.get().strip()
+    t_file = dub_tpl_file.get().strip()
+    o_dir = dub_out_dir.get().strip()
+    
+    if not all([i_dir, c_dir, t_file, o_dir]):
+        return messagebox.showwarning("警告", "请完整选择信息表、角色表、模板文件和输出文件夹！")
+        
+    try:
+        import openpyxl
+        from copy import copy
+        import io
+        from openpyxl.drawing.image import Image as xlImage
+        from openpyxl.styles import Border, Side, Font, Alignment
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.cell.rich_text import TextBlock, CellRichText
+        
+        # 定义宋体12号的基础样式与边框
+        ft_normal = Font(name='宋体', size=12)
+        ft_bold = Font(name='宋体', size=12, bold=True)
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        align_center = Alignment(vertical='center', wrap_text=True)
+        
+        # 定义用于富文本局部加粗的内联字体
+        inline_bold = InlineFont(rFont='宋体', sz=12, b=True)
+        inline_norm = InlineFont(rFont='宋体', sz=12, b=False)
+        
+        info_files = {f: os.path.join(i_dir, f) for f in os.listdir(i_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')}
+        char_files = {f: os.path.join(c_dir, f) for f in os.listdir(c_dir) if f.lower().endswith('.xlsx') and not f.startswith('~')}
+        common_files = set(info_files.keys()).intersection(set(char_files.keys()))
+        
+        if not common_files: return messagebox.showwarning("警告", "两个文件夹中没有找到同名的 XLSX 文件！")
+        os.makedirs(o_dir, exist_ok=True)
+        processed_count = 0
+        
+        for file in common_files:
+            # ================= 1. 提取信息表 =================
+            wb_info = openpyxl.load_workbook(info_files[file], data_only=True)
+            ws_info = wb_info.active
+            info_dict = {}
+            for r in range(1, ws_info.max_row + 1):
+                k = str(ws_info.cell(r, 1).value or "").strip()
+                v = str(ws_info.cell(r, 2).value or "").strip()
+                if k: info_dict[k] = v
+            
+            # ================= 2. 提取角色表图片映射 =================
+            wb_char = openpyxl.load_workbook(char_files[file], data_only=True)
+            ws_char = wb_char.active
+            
+            img_map = {}
+            for img in getattr(ws_char, '_images', []):
+                try:
+                    r_idx = img.anchor._from.row + 1 
+                    img_map[r_idx] = img
+                except: pass
+
+            # ================= 3. 载入模板并注入数据 =================
+            wb_tpl = openpyxl.load_workbook(t_file)
+            ws_tpl = wb_tpl.active
+            
+            # 填入顶部信息 (A列，拼接内容，利用富文本完美保留标题加粗)
+            ws_tpl.cell(2, 1).value = CellRichText(TextBlock(inline_bold, "剧集名称："), TextBlock(inline_norm, info_dict.get('剧集名称', '')))
+            ws_tpl.cell(3, 1).value = CellRichText(TextBlock(inline_bold, "总集数："), TextBlock(inline_norm, info_dict.get('总集数', '')))
+            ws_tpl.cell(4, 1).value = CellRichText(TextBlock(inline_bold, "配音语言："), TextBlock(inline_norm, info_dict.get('配音语言', '')))
+            ws_tpl.cell(6, 1).value = CellRichText(TextBlock(inline_bold, "剧集梗概："), TextBlock(inline_norm, info_dict.get('简介', '')))
+            
+            start_r = 7
+            
+            # 解除 start_r 行以下所有的合并单元格，防止清理时报错
+            merged_ranges = list(ws_tpl.merged_cells.ranges)
+            for m_range in merged_ranges:
+                if m_range.min_row >= start_r:
+                    ws_tpl.unmerge_cells(str(m_range))
+            
+            # 清理旧数据
+            for row in ws_tpl.iter_rows(min_row=start_r, max_row=ws_tpl.max_row):
+                for cell in row: 
+                    cell.value = None
+                    cell.border = Border()
+            
+            current_out_row = start_r
+            
+            # ================= 4. 遍历并写入角色表 =================
+            for r in range(2, ws_char.max_row + 1):
+                name = str(ws_char.cell(r, 1).value or "").strip()
+                if not name: continue
+                
+                identity = str(ws_char.cell(r, 3).value or "").strip()
+                gender = str(ws_char.cell(r, 4).value or "").strip()
+                age = str(ws_char.cell(r, 5).value or "").strip()
+                desc = str(ws_char.cell(r, 6).value or "").strip()
+                voice = str(ws_char.cell(r, 7).value or "").strip()
+                
+                # 构造富文本对象 (局部加粗的宋体)
+                text_blocks = [
+                    TextBlock(inline_bold, name),
+                    TextBlock(inline_norm, f"\n\n年龄：{age}\n身份：{identity}\n性格：{desc}\n声线：{voice}")
+                ]
+                
+                # 写入基本框架 (列A至G，即1至7)
+                ws_tpl.cell(current_out_row, 1, "") # 第1列：留空
+                ws_tpl.cell(current_out_row, 2, "") # 第2列：留空
+                c_info = ws_tpl.cell(current_out_row, 3) # 第3列：角色信息富文本
+                c_info.value = CellRichText(*text_blocks)
+                
+                # 给第1至7列全部刷上宋体、居中和边框
+                for col_idx in range(1, 8):
+                    c = ws_tpl.cell(current_out_row, col_idx)
+                    # c.border = thin_border
+                    c.alignment = align_center
+                    if col_idx != 3: c.font = ft_normal
+                
+                # 规则：角色信息占4个单元格横向合并 (C, D, E, F)
+                ws_tpl.merge_cells(start_row=current_out_row, start_column=3, end_row=current_out_row, end_column=6)
+                
+                # 图片安全提取并放置在第7列 (G列)
+                if r in img_map:
+                    try:
+                        old_img = img_map[r]
+                        img_bytes = old_img._data() if hasattr(old_img, '_data') else old_img.ref.getvalue()
+                        new_img = xlImage(io.BytesIO(img_bytes))
+                        
+                        # ====== 核心修复：智能等比例缩放图片，完美限制在单元格内部 ======
+                        orig_w, orig_h = old_img.width, old_img.height
+                        # 设定单元格边界的最大容纳像素 (留出一点边距防贴边)
+                        max_w, max_h = 100, 135 
+                        if orig_w > 0 and orig_h > 0:
+                            # 计算缩放比例，以最长的一边为准进行等比缩小
+                            ratio = min(max_w / orig_w, max_h / orig_h)
+                            new_img.width = int(orig_w * ratio)
+                            new_img.height = int(orig_h * ratio)
+                        # ==================================================================
+                        
+                        ws_tpl.add_image(new_img, f"G{current_out_row}")
+                    except: pass
+                    
+                # 根据文本行数动态撑开行高
+                line_count = 6 + (len(desc)//20) 
+                # 确保行高至少有 110 磅 (约146像素)，足以将 135 像素高的图片完美包裹其中
+                ws_tpl.row_dimensions[current_out_row].height = max(110, line_count * 18)
+                current_out_row += 1
+                
+            # ================= 5. 写入底部注意事项 =================
+            # 规则：占5个单元格横向合并
+            ws_tpl.cell(current_out_row, 1, "配音注意事项").font = ft_bold  # 修复：恢复 A 列标题加粗
+            ws_tpl.cell(current_out_row, 2, dub_note_var.get().strip()).font = ft_normal
+            for col_idx in range(1, 7):
+                c = ws_tpl.cell(current_out_row, col_idx)
+                # c.border = thin_border
+                c.alignment = align_center
+            ws_tpl.merge_cells(start_row=current_out_row, start_column=2, end_row=current_out_row, end_column=6)
+            ws_tpl.row_dimensions[current_out_row].height = 85
+            
+            ws_tpl.cell(current_out_row + 1, 1, "试样集数").font = ft_bold  # 修复：恢复 A 列标题加粗
+            ws_tpl.cell(current_out_row + 1, 2, dub_sample_var.get().strip()).font = ft_normal
+            for col_idx in range(1, 7):
+                c = ws_tpl.cell(current_out_row + 1, col_idx)
+                # c.border = thin_border
+                c.alignment = align_center
+            ws_tpl.merge_cells(start_row=current_out_row + 1, start_column=2, end_row=current_out_row + 1, end_column=6)
+            ws_tpl.row_dimensions[current_out_row + 1].height = 30
+            
+            # 保存
+            out_name = f"{os.path.splitext(file)[0]}_前期物料表.xlsx"
+            wb_tpl.save(os.path.join(o_dir, out_name))
+            processed_count += 1
+            
+        messagebox.showinfo("完成", f"批量合并完成！\n共生成了 {processed_count} 份纯净版物料表。\n宋体12号、加粗样式及图片均已完美贴合模板格式！")
+    except Exception as e:
+        messagebox.showerror("错误", f"处理过程中发生错误:\n{str(e)}")
+
+# --- UI 布局区 ---
+# 模块 1：配音物料合并
+f_dub = ttk.LabelFrame(tab_dubbing, text=" 📂 第一步：批量合并 [配音信息表] 与 [配音角色表] ", padding=15)
+f_dub.pack(fill=tk.X, pady=10)
+f_dub.columnconfigure(1, weight=1)
+
+ttk.Label(f_dub, text="配音信息表 文件夹:").grid(row=0, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_info_dir).grid(row=0, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_info_dir, "选择配音信息表文件夹")).grid(row=0, column=2, padx=5)
+
+ttk.Label(f_dub, text="配音角色表 文件夹:").grid(row=1, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_char_dir).grid(row=1, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_char_dir, "选择配音角色表文件夹")).grid(row=1, column=2, padx=5)
+
+# === 新增：选择模板文件 ===
+ttk.Label(f_dub, text="严格对齐排版的 模板文件:").grid(row=2, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_tpl_file).grid(row=2, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: dub_tpl_file.set(filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")]))).grid(row=2, column=2, padx=5)
+
+ttk.Label(f_dub, text="最终生成的物料表 输出至:").grid(row=3, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_out_dir).grid(row=3, column=1, sticky="ew", padx=10)
+ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_out_dir, "选择输出文件夹")).grid(row=3, column=2, padx=5)
+
+# === 新增：自定义配音要求 ===
+ttk.Label(f_dub, text="配音注意事项:").grid(row=4, column=0, sticky="ne", pady=5)
+tk.Text(f_dub, width=65, height=4).grid(row=4, column=1, columnspan=2, sticky="ew", padx=10, pady=5)
+f_dub.children[list(f_dub.children.keys())[-1]].insert("1.0", dub_note_var.get())
+f_dub.children[list(f_dub.children.keys())[-1]].bind("<KeyRelease>", lambda e: dub_note_var.set(e.widget.get("1.0", tk.END)))
+
+ttk.Label(f_dub, text="试样集数 要求:").grid(row=5, column=0, sticky="e", pady=5)
+ttk.Entry(f_dub, textvariable=dub_sample_var).grid(row=5, column=1, columnspan=2, sticky="ew", padx=10, pady=5)
+
+ttk.Button(f_dub, text="⚡ 按照模板严格合并生成物料表", command=run_dubbing_merge, style='TButton').grid(row=6, column=0, columnspan=3, pady=15, ipadx=20)
+
+# 模块 2：DeepL 无损翻译
+f_trans = ttk.LabelFrame(tab_dubbing, text=" 🌐 第二步：DeepL API 无损排版翻译 (支持任意 Excel) ", padding=15)
+f_trans.pack(fill=tk.X, pady=10)
+f_trans.columnconfigure(1, weight=1)
+
+ttk.Label(f_trans, text="需翻译的原始文件 (Excel):").grid(row=0, column=0, sticky="e", pady=5)
+ttk.Entry(f_trans, textvariable=trans_in_file).grid(row=0, column=1, sticky="ew", padx=10)
+ttk.Button(f_trans, text="浏览...", command=lambda: trans_in_file.set(filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")]))).grid(row=0, column=2, padx=5)
+
+ttk.Label(f_trans, text="翻译后另存为 (Excel):").grid(row=1, column=0, sticky="e", pady=5)
+ttk.Entry(f_trans, textvariable=trans_out_file).grid(row=1, column=1, sticky="ew", padx=10)
+ttk.Button(f_trans, text="浏览...", command=lambda: ask_save_file(trans_out_file, "保存翻译后文件", [("Excel", "*.xlsx")], ".xlsx")).grid(row=1, column=2, padx=5)
+
+# --- 新增：翻译服务引擎选择 ---
+f_service = ttk.Frame(f_trans)
+f_service.grid(row=2, column=0, columnspan=3, sticky="w", pady=(15, 5))
+ttk.Label(f_service, text="翻译服务引擎:").pack(side=tk.LEFT, padx=(0, 5))
+service_opts = [
+    "自定义 API (需填下方地址)", 
+    "Google 原生网页爬虫 (无需API)",
+    "Google 翻译接口 (translators库)",
+    "Bing 翻译接口 (translators库)"
+]
+ttk.Combobox(f_service, textvariable=trans_service_mode, values=service_opts, width=32, state="readonly").pack(side=tk.LEFT)
+
+f_api = ttk.Frame(f_trans)
+f_api.grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
+ttk.Label(f_api, text="自定义 API 请求地址:").pack(side=tk.LEFT, padx=(0, 5))
+ttk.Entry(f_api, textvariable=deepl_api_url, width=65).pack(side=tk.LEFT)
+
+f_lang = ttk.Frame(f_trans)
+f_lang.grid(row=4, column=0, columnspan=3, sticky="w", pady=5)
+ttk.Label(f_lang, text="目标语言 (如 EN, ZH, ID, 可手动输入):").pack(side=tk.LEFT, padx=(0, 5))
+ttk.Combobox(f_lang, textvariable=deepl_tgt_lang, values=["EN", "ZH", "JA", "KO", "ID", "ES", "RU", "FR", "DE"], width=15).pack(side=tk.LEFT)
+
+# --- 底部操作按钮组 ---
+btn_frame = ttk.Frame(f_trans)
+btn_frame.grid(row=5, column=0, columnspan=3, pady=15)
+
+btn_trans = ttk.Button(btn_frame, text="🌐 开始执行 XLSX 深度翻译", command=run_xlsx_translation, style='TButton')
+btn_trans.pack(side=tk.LEFT, padx=10, ipadx=20)
+
+btn_trans_stop = ttk.Button(btn_frame, text="⏹ 停止翻译", command=stop_xlsx_translation, style='TButton', state=tk.DISABLED)
+btn_trans_stop.pack(side=tk.LEFT, padx=10, ipadx=20)
+# ===============================================================
 
 update_m0_ui()
 update_m8_ui()
