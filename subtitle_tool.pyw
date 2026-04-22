@@ -123,7 +123,6 @@ class LQA_App:
         if not matched_terms:
             return cell_rich_text
 
-        # 【核心修复1】：如果 AI 没做修改，传进来的是普通字符串
         # 将其包裹为列表，就可以无缝进入下方的循环逻辑进行富文本组装
         if isinstance(cell_rich_text, str):
             cell_rich_text = [cell_rich_text]

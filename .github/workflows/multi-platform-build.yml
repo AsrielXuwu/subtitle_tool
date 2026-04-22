@@ -43,12 +43,12 @@ jobs:
     - name: Build with PyInstaller (Windows)
       if: matrix.os == 'windows-latest'
       run: |
-        pyinstaller --noconsole --onefile --name "SubtitleToolbox" subtitle_tool.pyw
+        pyinstaller --noconsole --onefile --name "SubtitleToolbox" --copy-metadata tiktoken --hidden-import tiktoken_ext.openai_public --hidden-import tiktoken_ext subtitle_tool.pyw
 
     - name: Build with PyInstaller (macOS)
       if: startsWith(matrix.os, 'macos')
       run: |
-        pyinstaller --windowed --name "SubtitleToolbox" subtitle_tool.pyw
+        pyinstaller --windowed --name "SubtitleToolbox" --copy-metadata tiktoken --hidden-import tiktoken_ext.openai_public --hidden-import tiktoken_ext subtitle_tool.pyw
 
     # 修改点 1：手动把 macOS 的 .app 压成 zip，并规范不同平台的文件名
     - name: Prepare Artifacts
