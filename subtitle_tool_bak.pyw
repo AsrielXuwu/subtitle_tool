@@ -742,7 +742,7 @@ def process_merge_mode2(src_dir, tgt_dir, src_lang_name, tgt_lang_name, output_e
     pd.DataFrame(master_data).to_excel(output_excel, index=False, sheet_name="Subtitle Translation")
     return len(src_files)
 
-def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_str, col_text_str):
+def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_str, col_text_str, match_mode=0):
     if report_file.lower().endswith('.csv'): df = pd.read_csv(report_file)
     else: df = pd.read_excel(report_file)
         
@@ -751,9 +751,11 @@ def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_
         
     srt_cache, summary_data = {}, []
     for index, row in df.iterrows():
-        filename_val, id_val, text_val = str(row.iloc[c_file]).strip(), str(row.iloc[c_id]).strip(), row.iloc[c_text]
-        if id_val.endswith('.0'): id_val = id_val[:-2]
-        if pd.isna(text_val) or str(text_val).strip() == "" or filename_val == "nan": continue
+        filename_val, match_val, text_val = str(row.iloc[c_file]).strip(), str(row.iloc[c_id]).strip(), row.iloc[c_text]
+        # ID模式下自动去除由于Excel数值格式产生的 .0
+        if match_mode == 0 and match_val.endswith('.0'): match_val = match_val[:-2]
+        
+        if pd.isna(text_val) or str(text_val).strip() == "" or filename_val == "nan" or match_val == "nan": continue
             
         text_val = str(text_val).strip()
         basename = os.path.basename(filename_val.replace('\\', '/'))
@@ -763,11 +765,22 @@ def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_
             
         if basename not in srt_cache: srt_cache[basename] = parse_srt_file(filepath)
         for block in srt_cache[basename]:
-            if block['ID'] == id_val:
+            is_match = False
+            if match_mode == 0:
+                # 模式0：严格按 ID 匹配
+                is_match = (block['ID'] == match_val)
+            else:
+                # 模式1：按时间轴匹配（智能无视空格，兼容英文句号与逗号的差异进行对比）
+                t1 = block['Timeline'].replace(' ', '').replace(',', '.')
+                t2 = match_val.replace(' ', '').replace(',', '.')
+                is_match = (t1 == t2)
+
+            if is_match:
                 old_text = block['Text']
                 if old_text != text_val:
                     block['Text'] = text_val
-                    summary_data.append({'SRT文件名': basename, '字幕ID': id_val, '原字幕内容': old_text, '替换后新内容': text_val})
+                    match_type_str = "字幕ID" if match_mode == 0 else "时间轴"
+                    summary_data.append({'SRT文件名': basename, match_type_str: match_val, '原字幕内容': old_text, '替换后新内容': text_val})
                 break
                 
     for basename, blocks in srt_cache.items():
@@ -1605,7 +1618,9 @@ def run_replace():
     if not report_file or not srt_dir or not out_summary: return messagebox.showwarning("警告", "请完整选择文件路径！")
     if len(parts) != 3 or not all(parts): return messagebox.showwarning("警告", "列名格式错误！")
     try:
-        rep_count, file_count = process_replace(report_file, srt_dir, out_summary, parts[0], parts[1], parts[2])
+        # === 核心修改：将界面选择的匹配模式传递给底层函数 ===
+        mode = rep_match_mode_var.get()
+        rep_count, file_count = process_replace(report_file, srt_dir, out_summary, parts[0], parts[1], parts[2], mode)
         messagebox.showinfo("完成", f"替换完毕！\n共影响了 {file_count} 个 SRT 文件。\n合计成功替换 {rep_count} 条字幕，已生成展示表格。")
     except Exception as e: messagebox.showerror("错误", f"替换失败:\n{str(e)}")
 
@@ -1971,25 +1986,35 @@ current_presets_rep = load_presets(PRESET_FILE_REP, DEFAULT_PRESETS_REP)
 rep_report_var, rep_srt_var, rep_out_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
 rep_cols_var = tk.StringVar(value=current_presets_rep[0] if current_presets_rep else "A, B, E")
 
+# ====== 新增：匹配模式变量 ======
+rep_match_mode_var = tk.IntVar(value=0)
+
 ttk.Label(tab_rep, text="QA 报告 (Excel/CSV):").grid(row=0, column=0, sticky="e", padx=(0,10), pady=10)
 ttk.Entry(tab_rep, textvariable=rep_report_var).grid(row=0, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_rep, text="浏览...", command=lambda: ask_file(rep_report_var, "选择文件", [("Excel", "*.xlsx"), ("CSV", "*.csv")])).grid(row=0, column=2, padx=(5,0), pady=10)
 
+# ====== 新增：匹配模式选择 UI ======
+f_rep_mode = ttk.Frame(tab_rep)
+f_rep_mode.grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 5), padx=20)
+ttk.Radiobutton(f_rep_mode, text="根据【字幕ID】匹配替换", variable=rep_match_mode_var, value=0).pack(side=tk.LEFT, padx=(0, 15))
+ttk.Radiobutton(f_rep_mode, text="根据【时间轴】匹配替换 (智能忽略空格与逗号差异)", variable=rep_match_mode_var, value=1).pack(side=tk.LEFT)
+
 f_r = ttk.Frame(tab_rep)
-f_r.grid(row=1, column=0, columnspan=3, sticky="w", pady=5, padx=20)
-ttk.Label(f_r, text="列名 (文件, ID, 内容):").pack(side=tk.LEFT, padx=(0,5))
+f_r.grid(row=2, column=0, columnspan=3, sticky="w", pady=5, padx=20)
+ttk.Label(f_r, text="列名 (文件, ID/时间轴, 内容):").pack(side=tk.LEFT, padx=(0,5))
 cb_r = ttk.Combobox(f_r, textvariable=rep_cols_var, values=current_presets_rep, width=15)
 cb_r.pack(side=tk.LEFT, padx=(0, 10))
 ttk.Button(f_r, text="保存预设", command=lambda: action_save_preset(rep_cols_var, current_presets_rep, cb_r, PRESET_FILE_REP, 3)).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_r, text="删除预设", command=lambda: action_del_preset(rep_cols_var, current_presets_rep, cb_r, PRESET_FILE_REP)).pack(side=tk.LEFT, padx=5)
 
-ttk.Label(tab_rep, text="需修改的 SRT 文件夹:").grid(row=2, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_rep, textvariable=rep_srt_var).grid(row=2, column=1, sticky="ew", padx=5, pady=10)
-ttk.Button(tab_rep, text="浏览...", command=lambda: ask_dir(rep_srt_var, "选择目录")).grid(row=2, column=2, padx=(5,0), pady=10)
+ttk.Label(tab_rep, text="需修改的 SRT 文件夹:").grid(row=3, column=0, sticky="e", padx=(0,10), pady=10)
+ttk.Entry(tab_rep, textvariable=rep_srt_var).grid(row=3, column=1, sticky="ew", padx=5, pady=10)
+ttk.Button(tab_rep, text="浏览...", command=lambda: ask_dir(rep_srt_var, "选择目录")).grid(row=3, column=2, padx=(5,0), pady=10)
 
-ttk.Label(tab_rep, text="保存替换展示表格:").grid(row=3, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_rep, textvariable=rep_out_var).grid(row=3, column=1, sticky="ew", padx=5, pady=10)
-ttk.Button(tab_rep, text="浏览...", command=lambda: ask_save_file(rep_out_var, "保存", [("Excel", "*.xlsx")], ".xlsx")).grid(row=3, column=2, padx=(5,0), pady=10)
+ttk.Label(tab_rep, text="保存替换展示表格:").grid(row=4, column=0, sticky="e", padx=(0,10), pady=10)
+ttk.Entry(tab_rep, textvariable=rep_out_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
+ttk.Button(tab_rep, text="浏览...", command=lambda: ask_save_file(rep_out_var, "保存", [("Excel", "*.xlsx")], ".xlsx")).grid(row=4, column=2, padx=(5,0), pady=10)
+
 ttk.Button(tab_rep, text="开始替换", command=run_replace, style='TButton').grid(row=5, column=0, columnspan=3, pady=15, ipadx=20, ipady=5)
 
 # ================= TAB 8: 双语 SRT 批量拆分 =================

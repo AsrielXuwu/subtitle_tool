@@ -3,3 +3,6 @@ openpyxl
 opencv-python
 pillow
 translators
+difflib
+openai
+tiktoken
