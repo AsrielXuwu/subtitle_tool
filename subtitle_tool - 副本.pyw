@@ -1,6 +1,8 @@
+import difflib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
+from tkinter import scrolledtext
 import pandas as pd
 import os
 import re
@@ -9,6 +11,1315 @@ import zipfile
 import math
 import platform
 import translators as ts
+import openpyxl
+from openpyxl.cell.rich_text import TextBlock, CellRichText
+from openpyxl.cell.text import InlineFont
+from openai import AzureOpenAI, NOT_GIVEN
+import base64
+import sys
+import threading
+# ---------------- 新增：多线程预备 ----------------
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# ================= 核心配置区 =================
+DEFAULT_API_VERSION = "2025-04-01-preview"
+
+# 动态获取当前脚本/软件所在的绝对目录（兼容直接运行 .py 和打包后的 .exe）
+if getattr(sys, 'frozen', False):
+    CONFIG_DIR = os.path.dirname(sys.executable)
+else:
+    CONFIG_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 强制将配置文件路径绑定到软件所在目录
+LQA_CONFIG_FILE = os.path.join(CONFIG_DIR, "lqa_api_config.enc")
+SECRET_KEY = b"LQA_TOOL_SECURE_XOR_KEY_2026_!@"
+
+def encrypt_data(data_dict):
+    """字节级异或 + Base64 加密"""
+    text = json.dumps(data_dict).encode('utf-8')
+    encrypted = bytearray(b ^ SECRET_KEY[i % len(SECRET_KEY)] for i, b in enumerate(text))
+    return base64.b64encode(encrypted).decode('utf-8')
+
+def decrypt_data(b64_text):
+    """Base64 解密 + 字节级异或还原"""
+    encrypted = base64.b64decode(b64_text)
+    decrypted = bytearray(b ^ SECRET_KEY[i % len(SECRET_KEY)] for i, b in enumerate(encrypted))
+    return json.loads(decrypted.decode('utf-8'))
+# ==============================================
+
+ENGINES_MAP = {
+    'GPT-5.3-chat': 'gpt-5.3-chat-2026-03-03',
+    'GPT-5.2-chat': 'gpt-5.2-chat-2025-12-11',
+    'GPT-o3-mini': 'o3-mini-2025-01-31'
+}
+
+# ======= LQA 目标语言映射表 (包含所有要求及常见语种) =======
+LANGUAGES_MAP = {
+    "English (United States)": "en-US",
+    "English (United Kingdom)": "en-GB",
+    "Indonesian (Bahasa Indonesia)": "id-ID",
+    "Portuguese (Brazil)": "pt-BR",
+    "Portuguese (Portugal)": "pt-PT",
+    "Polish (Polski)": "pl-PL",
+    "Turkish (Türkçe)": "tr-TR",
+    "Italian (Italiano)": "it-IT",
+    "Russian (Русский)": "ru-RU",
+    "Romanian (Română)": "ro-RO",
+    "German (Deutsch)": "de-DE",
+    "French (Français)": "fr-FR",
+    "Chinese (Simplified)": "zh-CN",
+    "Chinese (Traditional, Taiwan)": "zh-TW",
+    "Chinese (Traditional, Hong Kong)": "zh-HK",
+    "Bulgarian (Български)": "bg-BG",
+    "Filipino (Tagalog)": "tl-PH",
+    "Czech (Čeština)": "cs-CZ",
+    "Vietnamese (Tiếng Việt)": "vi-VN",
+    "Hindi (हिन्दी)": "hi-IN",
+    "Spanish (Spain)": "es-ES",
+    "Spanish (Latin America)": "es-419",
+    "Japanese (日本語)": "ja-JP",
+    "Korean (한국어)": "ko-KR",
+    "Thai (ไทย)": "th-TH",
+    "Arabic (العربية)": "ar-SA",
+    "Dutch (Nederlands)": "nl-NL",
+    "Greek (Ελληνικά)": "el-GR",
+    "Hungarian (Magyar)": "hu-HU",
+    "Swedish (Svenska)": "sv-SE",
+    "Danish (Dansk)": "da-DK",
+    "Finnish (Suomi)": "fi-FI",
+    "Norwegian (Norsk)": "no-NO",
+    "Malay (Bahasa Melayu)": "ms-MY",
+    "Ukrainian (Українська)": "uk-UA"
+}
+
+# ======= 连续断句处理：无空格语言集合 =======
+# 这里的语言在跨行拼接时，AI不会强行插入空格 (加入了台繁、港繁、日文、泰文等)
+NO_SPACE_LANGS = {
+    "zh-CN", "zh-TW", "zh-HK", "ja-JP", "th-TH", 
+    "Chinese (Simplified)", "Chinese (Traditional, Taiwan)", "Chinese (Traditional, Hong Kong)", 
+    "Japanese (日本語)", "Thai (ไทย)"
+}
+
+
+class LQA_App:
+    def browse_tb_file(self):
+        filepath = filedialog.askopenfilename(filetypes=[("CSV/Excel Files", "*.csv;*.xlsx")])
+        if filepath:
+            self.tb_file_path.set(filepath)
+
+    def browse_term_file(self):
+        filepath = filedialog.askopenfilename(
+            title="选择术语表文件",
+            filetypes=[("Excel Files", "*.xlsx;*.xls"), ("CSV Files", "*.csv")]
+        )
+        if filepath:
+            self.term_file_path.set(filepath)
+
+    def scan_type_column(self):
+        term_file = self.term_file_path.get()
+        if not term_file or not os.path.exists(term_file):
+            messagebox.showwarning("警告", "请先选择术语表文件。")
+            return
+            
+        type_col_letter = self.term_type_col.get().strip().upper()
+        if not type_col_letter:
+            messagebox.showwarning("警告", "请填写术语表中 Type 列所在的字母（如 C）。")
+            return
+            
+        try:
+            from openpyxl.utils import column_index_from_string
+            type_idx = column_index_from_string(type_col_letter) - 1 # 转换为 pandas 的 0 索引
+            
+            df = pd.read_excel(term_file, sheet_name=0)
+            if type_idx >= len(df.columns):
+                messagebox.showwarning("警告", "填写的 Type 列字母超出了表格实际列数。")
+                return
+                
+            unique_types = df.iloc[:, type_idx].dropna().astype(str).unique().tolist()
+            
+            self.type_listbox.delete(0, tk.END)
+            for t in sorted(unique_types):
+                self.type_listbox.insert(tk.END, t)
+                
+            self.log(f"成功扫描术语表，提取 {len(unique_types)} 个唯一类型。")
+        except Exception as e:
+            messagebox.showerror("错误", f"扫描术语表时发生异常: {e}")
+
+    def apply_term_rich_text(self, cell_rich_text, matched_terms, ignore_case=True):
+        """处理富文本覆盖逻辑：彻底解决 WPS/Excel 绿色溢出问题。"""
+        if not matched_terms:
+            return cell_rich_text
+
+        # 将纯文本转为列表，无缝进入下方的组装逻辑
+        if isinstance(cell_rich_text, str):
+            cell_rich_text = [cell_rich_text]
+        elif not isinstance(cell_rich_text, CellRichText):
+            return cell_rich_text
+
+        # 术语的绿色加粗标准格式
+        green_bold = InlineFont(color="FF00B050", b=True)
+        # 标记纯文本的防溢出标识符
+        PLAIN_TEXT_FLAG = "PLAIN_TEXT"
+
+        new_blocks = []
+        
+        sorted_terms = sorted(matched_terms, key=len, reverse=True)
+        # 防御性清理空字符
+        sorted_terms = [t for t in sorted_terms if t.strip()] 
+        if not sorted_terms:
+            return CellRichText(*cell_rich_text)
+            
+        flags = re.IGNORECASE if ignore_case else 0
+
+        for block in cell_rich_text:
+            if isinstance(block, str):
+                text = block
+                current_font = PLAIN_TEXT_FLAG
+            else:
+                text = block.text
+                current_font = block.font
+                # 【核心修复】：如果富文本块原先没有指定颜色，强制打上纯文本标记
+                if not current_font or not current_font.color:
+                    current_font = PLAIN_TEXT_FLAG
+                
+            segments = [(text, current_font)]
+            for term in sorted_terms:
+                temp_segments = []
+                for seg_text, seg_font in segments:
+                    if seg_font == green_bold:
+                        temp_segments.append((seg_text, seg_font))
+                        continue
+                        
+                    parts = re.split(f'({re.escape(term)})', seg_text, flags=flags)
+                    for part in parts:
+                        if not part:
+                            continue
+                        if (ignore_case and part.lower() == term.lower()) or (not ignore_case and part == term):
+                            temp_segments.append((part, green_bold))
+                        else:
+                            temp_segments.append((part, seg_font))
+                segments = temp_segments
+                
+            for seg_text, seg_font in segments:
+                if seg_text:
+                    # 【核心修复】：如果是纯文本，直接作为字符串插入！
+                    # 不生成任何带属性的空 TextBlock，WPS 找不到空标签，自然无法传染颜色！
+                    if seg_font == PLAIN_TEXT_FLAG:
+                        new_blocks.append(seg_text)
+                    else:
+                        new_blocks.append(TextBlock(font=seg_font, text=seg_text))
+                
+        return CellRichText(*new_blocks)
+    
+    def __init__(self, parent_frame):
+        self.parent = parent_frame  # 保存父容器的作用域引用
+        
+        
+        self.file_path = tk.StringVar()
+        self.output_path = tk.StringVar()
+        self.stop_flag = False
+        self.api_endpoint = tk.StringVar()  # 新增：绑定 UI 的 Endpoint
+        self.api_key = tk.StringVar()       # 新增：绑定 UI 的 Key
+        
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 直接使用外部传进来的、已经带有滚动条的父容器
+        self.scrollable_frame = self.parent
+
+        # --- 术语检查配置区 ---
+        frame_term = ttk.LabelFrame(self.scrollable_frame, text="术语标记 (选中的Type为部分匹配)", padding=10)
+        frame_term.pack(fill="x", padx=10, pady=5)
+        frame_term.columnconfigure(1, weight=1)
+
+        self.term_file_path = tk.StringVar()
+        self.term_output_col = tk.StringVar(value="G")
+
+        # --- Row 0: 术语表文件与输出列 ---
+        ttk.Label(frame_term, text="术语表文件:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frame_term, textvariable=self.term_file_path, width=35).grid(row=0, column=1, columnspan=4, padx=5, sticky="we")
+        ttk.Button(frame_term, text="浏览...", command=self.browse_term_file).grid(row=0, column=5, padx=5)
+
+        ttk.Label(frame_term, text="输出展示列(如G):").grid(row=0, column=6, sticky="w", padx=(5, 2))
+        ttk.Entry(frame_term, textvariable=self.term_output_col, width=4).grid(row=0, column=7, sticky="w")
+
+        # --- Row 1: 选项与列字母指定区 (重新排版) ---
+        self.enable_term_check_var = tk.BooleanVar(value=True) # 术语标记总开关
+        self.ignore_case_var = tk.BooleanVar(value=True)
+        self.term_src_col = tk.StringVar(value="A")
+        self.term_tgt_col = tk.StringVar(value="B")
+        self.term_type_col = tk.StringVar(value="C")
+
+        # 开关与选项前置
+        ttk.Checkbutton(frame_term, text="启用术语标记", variable=self.enable_term_check_var).grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Checkbutton(frame_term, text="忽略大小写", variable=self.ignore_case_var).grid(row=1, column=1, sticky="w", pady=5)
+
+        ttk.Label(frame_term, text="原文列:").grid(row=1, column=2, sticky="e", padx=(5,2))
+        ttk.Entry(frame_term, textvariable=self.term_src_col, width=4).grid(row=1, column=3, sticky="w")
+
+        ttk.Label(frame_term, text="译文列:").grid(row=1, column=4, sticky="e", padx=(5,2))
+        ttk.Entry(frame_term, textvariable=self.term_tgt_col, width=4).grid(row=1, column=5, sticky="w")
+
+        ttk.Label(frame_term, text="Type列:").grid(row=1, column=6, sticky="e", padx=(5,2))
+        ttk.Entry(frame_term, textvariable=self.term_type_col, width=4).grid(row=1, column=7, sticky="w")
+
+        # --- Row 2: 扫描与多选区 ---
+        ttk.Button(frame_term, text="扫描术语表 Type", command=self.scan_type_column).grid(row=2, column=0, pady=10, sticky="nw")
+
+        type_list_frame = ttk.Frame(frame_term)
+        type_list_frame.grid(row=2, column=1, columnspan=7, sticky="we", pady=5)
+        self.type_listbox = tk.Listbox(type_list_frame, selectmode=tk.MULTIPLE, height=5, exportselection=False)
+        self.type_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        type_scrollbar = ttk.Scrollbar(type_list_frame, orient="vertical", command=self.type_listbox.yview)
+        type_scrollbar.pack(side=tk.RIGHT, fill="y")
+        self.type_listbox.config(yscrollcommand=type_scrollbar.set)
+
+        # --- 0. API 接口配置区 (新增) ---
+        frame_api = ttk.LabelFrame(self.scrollable_frame, text="0. API 接口配置 (自动加密存储本地)", padding=10)
+        frame_api.pack(fill="x", padx=10, pady=5)
+        frame_api.columnconfigure(1, weight=1)
+
+        ttk.Label(frame_api, text="API Azure Site:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frame_api, textvariable=self.api_endpoint, width=60).grid(row=0, column=1, padx=5, pady=2, sticky="we")
+        #ttk.Button(api_btn_frame, text="💾 保存配置", command=self.save_config).pack(side="top", fill="x", pady=(0, 2))
+        ttk.Button(frame_api, text="💾 保存配置", command=self.save_config).grid(row=0, column=2, pady=2)
+        ttk.Label(frame_api, text="API Key:").grid(row=1, column=0, sticky="w")
+        ttk.Entry(frame_api, textvariable=self.api_key, width=60, show="*").grid(row=1, column=1, padx=5, pady=2, sticky="we")
+        #ttk.Button(api_btn_frame, text="📂 加载配置", command=self.manual_load_config).pack(side="top", fill="x", pady=(2, 0))
+        ttk.Button(frame_api, text="📂 加载配置", command=self.manual_load_config).grid(row=1, column=2, pady=2)
+        # 增加一个 Frame 用来纵向堆叠这两个按钮
+        api_btn_frame = ttk.Frame(frame_api)
+        api_btn_frame.grid(row=0, column=2, rowspan=2, padx=10, pady=2)
+        
+        # --- 1. 文件设置区 ---
+        frame_file = ttk.LabelFrame(self.scrollable_frame, text="1. 文件设置", padding=10)
+        frame_file.pack(fill="x", padx=10, pady=5)
+        frame_file.columnconfigure(1, weight=1)
+        
+        ttk.Label(frame_file, text="输入 Excel:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(frame_file, textvariable=self.file_path, width=60).grid(row=0, column=1, padx=5, pady=2, sticky="we")
+        ttk.Button(frame_file, text="浏览...", command=self.browse_file).grid(row=0, column=2, pady=2)
+
+        ttk.Label(frame_file, text="输出位置(前缀):").grid(row=1, column=0, sticky="w")
+        ttk.Entry(frame_file, textvariable=self.output_path, width=60).grid(row=1, column=1, padx=5, pady=2, sticky="we")
+        ttk.Button(frame_file, text="另存为...", command=self.browse_output_file).grid(row=1, column=2, pady=2)
+        
+        # --- 性能设置区 (新增) ---
+        frame_perf = ttk.LabelFrame(self.scrollable_frame, text="性能与并发设置", padding=10)
+        frame_perf.pack(fill="x", padx=10, pady=5)
+        
+        self.use_multithread_var = tk.BooleanVar(value=False)
+        self.thread_count_var = tk.IntVar(value=5) # 默认5个并发
+        self.retry_count_var = tk.IntVar(value=3)  # 新增：默认失败重试3次
+        
+        ttk.Checkbutton(frame_perf, text="开启多线程并发", variable=self.use_multithread_var).grid(row=0, column=0, sticky="w")
+        
+        ttk.Label(frame_perf, text="并发线程数:").grid(row=0, column=1, sticky="w", padx=(15, 2))
+        ttk.Spinbox(frame_perf, from_=1, to=20, textvariable=self.thread_count_var, width=4).grid(row=0, column=2, sticky="w")
+        
+        # 新增：重试次数的 UI 组件
+        ttk.Label(frame_perf, text="失败重试次数:").grid(row=0, column=3, sticky="w", padx=(15, 2))
+        ttk.Spinbox(frame_perf, from_=0, to=10, textvariable=self.retry_count_var, width=4).grid(row=0, column=4, sticky="w")
+
+        # === 新增：输出模式选择 ===
+        ttk.Label(frame_file, text="输出模式:").grid(row=2, column=0, sticky="w", pady=5)
+        self.var_output_mode = tk.StringVar(value="split")
+        mode_frame = ttk.Frame(frame_file)
+        mode_frame.grid(row=2, column=1, columnspan=2, sticky="w", pady=2)
+        ttk.Radiobutton(mode_frame, text="分开输出 (按Sheet和集数独立文件)", variable=self.var_output_mode, value="split").pack(side="left", padx=(0, 10))
+        ttk.Radiobutton(mode_frame, text="合并输出 (全部结果保存在单一文件中)", variable=self.var_output_mode, value="merged").pack(side="left")
+        # ==========================
+
+        # --- 2. 列配置区 ---
+        frame_col = ttk.LabelFrame(self.scrollable_frame, text="2. 表格列号配置 (A=1, B=2...)", padding=10)
+        frame_col.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(frame_col, text="原文列号:").grid(row=0, column=0, sticky="w")
+        self.col_src = ttk.Entry(frame_col, width=5)
+        self.col_src.insert(0, "1")
+        self.col_src.grid(row=0, column=1, padx=5, sticky="w")
+        
+        ttk.Label(frame_col, text="译文列号:").grid(row=0, column=2, sticky="w", padx=(10, 0))
+        self.col_tgt = ttk.Entry(frame_col, width=5)
+        self.col_tgt.insert(0, "2")
+        self.col_tgt.grid(row=0, column=3, padx=5, sticky="w")
+        
+        ttk.Label(frame_col, text="集数列号:").grid(row=0, column=4, sticky="w", padx=(10, 0))
+        self.col_ep = ttk.Entry(frame_col, width=5)
+        self.col_ep.insert(0, "3")
+        self.col_ep.grid(row=0, column=5, padx=5, sticky="w")
+
+        ttk.Label(frame_col, text="输出列号:").grid(row=1, column=0, sticky="w", pady=5)
+        self.col_res = ttk.Entry(frame_col, width=5)
+        self.col_res.insert(0, "4")
+        self.col_res.grid(row=1, column=1, padx=5, sticky="w", pady=5)
+
+        ttk.Label(frame_col, text="起始行号:").grid(row=1, column=2, sticky="w", padx=(10, 0), pady=5)
+        self.row_start = ttk.Entry(frame_col, width=5)
+        self.row_start.insert(0, "2")
+        self.row_start.grid(row=1, column=3, padx=5, sticky="w", pady=5)
+
+        self.var_with_source = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame_col, text="双语模式 (参考原文)", variable=self.var_with_source).grid(row=1, column=4, columnspan=2, sticky="w", padx=(10, 0))
+
+        # --- 3. 工作表 (Sheet) 过滤 ---
+        frame_sheets = ttk.LabelFrame(self.scrollable_frame, text="3. 工作表 (Sheet) 选择 (不选默认仅检查第1个Sheet)", padding=10)
+        frame_sheets.pack(fill="x", padx=10, pady=5)
+        
+        self.btn_load_sheets = ttk.Button(frame_sheets, text="📑 扫描 Sheet", command=self.load_sheets)
+        self.btn_load_sheets.pack(side="left", padx=5)
+
+        self.sheet_listbox = tk.Listbox(frame_sheets, selectmode=tk.MULTIPLE, height=3, exportselection=False)
+        self.sheet_listbox.pack(side="left", fill="both", expand=True, padx=5)
+        
+        sheet_scrollbar = ttk.Scrollbar(frame_sheets, orient="vertical", command=self.sheet_listbox.yview)
+        sheet_scrollbar.pack(side="left", fill="y")
+        self.sheet_listbox.config(yscrollcommand=sheet_scrollbar.set)
+
+        # --- 4. 集数过滤区 ---
+        frame_eps = ttk.LabelFrame(self.scrollable_frame, text="4. 集数过滤 (支持 Ctrl 多选；不选默认检查全部)", padding=10)
+        frame_eps.pack(fill="x", padx=10, pady=5)
+        
+        self.btn_load_eps = ttk.Button(frame_eps, text="🔍 扫描集数", command=self.load_episodes)
+        self.btn_load_eps.pack(side="left", padx=5)
+
+        self.ep_listbox = tk.Listbox(frame_eps, selectmode=tk.MULTIPLE, height=4, exportselection=False)
+        self.ep_listbox.pack(side="left", fill="both", expand=True, padx=5)
+
+        scrollbar = ttk.Scrollbar(frame_eps, orient="vertical", command=self.ep_listbox.yview)
+        scrollbar.pack(side="left", fill="y")
+        self.ep_listbox.config(yscrollcommand=scrollbar.set)
+
+        # --- 5. AI 参数配置区 ---
+        frame_ai = ttk.LabelFrame(self.scrollable_frame, text="5. AI 引擎及要求设置", padding=10)
+        frame_ai.pack(fill="x", padx=10, pady=5)
+        frame_ai.columnconfigure(1, weight=1)
+        
+        ttk.Label(frame_ai, text="选择模型:").grid(row=0, column=0, sticky="w")
+        self.model_box = ttk.Combobox(frame_ai, values=list(ENGINES_MAP.keys()), width=20)
+        self.model_box.current(0)
+        self.model_box.grid(row=0, column=1, padx=5, sticky="w")
+
+        ttk.Label(frame_ai, text="目标语言(支持手填):").grid(row=0, column=2, sticky="w", padx=(10,0))
+        self.lang_box = ttk.Combobox(frame_ai, values=list(LANGUAGES_MAP.keys()), width=25)
+        self.lang_box.set("English (United States)")
+        self.lang_box.grid(row=0, column=3, padx=5, sticky="w")
+
+        ttk.Label(frame_ai, text="Token 上限/次:").grid(row=1, column=0, sticky="w", pady=5)
+        self.token_limit = ttk.Entry(frame_ai, width=10)
+        self.token_limit.insert(0, "2000")
+        self.token_limit.grid(row=1, column=1, padx=5, sticky="w", pady=5)
+
+        ttk.Label(frame_ai, text="要求/背景:").grid(row=2, column=0, sticky="nw", pady=5)
+        self.context_text = tk.Text(frame_ai, width=65, height=3)
+        self.context_text.insert("1.0", "这通常是短剧的字幕文件，为xxx背景。请确保称呼和语气符合设定（同时参考原文/译文），修改错别字、不地道的表达、拼写错误和语法错误，避免直译保证口语化，使其符合本地化要求，保留原始译文使用的人名、地名、专有名词和数字、货币格式（以及术语）。")
+        self.context_text.grid(row=2, column=1, columnspan=3, padx=5, pady=5, sticky="we")
+
+        # --- 新增：6. 术语表约束配置 (可选) ---
+        frame_tb = ttk.LabelFrame(self.scrollable_frame, text="6. 术语表约束配置 (向AI发送术语表，防止错误修改)", padding=10)
+        frame_tb.pack(fill="x", padx=10, pady=5)
+        
+        self.var_use_tb = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame_tb, text="启用术语约束 (勾选后会将下列文件中的术语发给AI)", variable=self.var_use_tb).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        
+        ttk.Label(frame_tb, text="术语表文件:").grid(row=1, column=0, sticky="w")
+        self.tb_file_path = tk.StringVar()
+        ttk.Entry(frame_tb, textvariable=self.tb_file_path, width=50).grid(row=1, column=1, padx=5, sticky="w")
+        ttk.Button(frame_tb, text="浏览...", command=self.browse_tb_file).grid(row=1, column=2)
+
+        tb_col_frame = ttk.Frame(frame_tb)
+        tb_col_frame.grid(row=2, column=0, columnspan=3, sticky="w", pady=5)
+        
+        ttk.Label(tb_col_frame, text="原文列名:").pack(side="left")
+        self.tb_col_src = tk.StringVar(value="Source")
+        ttk.Entry(tb_col_frame, textvariable=self.tb_col_src, width=10).pack(side="left", padx=(5, 15))
+        
+        ttk.Label(tb_col_frame, text="译文列名:").pack(side="left")
+        self.tb_col_tgt = tk.StringVar(value="Target")
+        ttk.Entry(tb_col_frame, textvariable=self.tb_col_tgt, width=10).pack(side="left", padx=(5, 15))
+
+        ttk.Label(tb_col_frame, text="Type列名:").pack(side="left")
+        self.tb_col_type = tk.StringVar(value="Type")
+        ttk.Entry(tb_col_frame, textvariable=self.tb_col_type, width=10).pack(side="left", padx=(5, 0))
+        # --------------------------------------
+
+        # --- 6. 操作与日志区 ---
+        frame_action = tk.Frame(self.scrollable_frame)
+        frame_action.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # === 新增：实时统计信息 ===
+        self.var_stats = tk.StringVar(value="准备就绪")
+        lbl_stats = ttk.Label(frame_action, textvariable=self.var_stats, font=("Arial", 10, "bold"))
+        lbl_stats.pack(pady=(5, 0))
+        # ==========================
+
+        btn_container = tk.Frame(frame_action)
+        btn_container.pack(pady=5)
+        
+        self.btn_start = ttk.Button(btn_container, text="🚀 开始检查", command=self.start_processing)
+        self.btn_start.pack(side="left", padx=10)
+
+        self.btn_stop = ttk.Button(btn_container, text="🛑 停止检查", command=self.stop_processing, state="disabled")
+        self.btn_stop.pack(side="left", padx=10)
+
+        # 将 height=13 修改为你想要的高度，比如 20 或 25
+        self.log_area = scrolledtext.ScrolledText(frame_action, width=85, height=30, state='disabled')
+        self.log_area.pack(fill="both", expand=True)
+        self.load_config()
+    
+    def save_config(self):
+        """加密并保存 API 配置到软件所在目录"""
+        data = {
+            "endpoint": self.api_endpoint.get().strip(),
+            "api_key": self.api_key.get().strip()
+        }
+        if not data["endpoint"] or not data["api_key"]:
+            messagebox.showwarning("警告", "Endpoint 和 API Key 不能为空！")
+            return
+            
+        try:
+            enc_data = encrypt_data(data)
+            # 使用新的全局统一路径
+            with open(LQA_CONFIG_FILE, "w", encoding="utf-8") as f:
+                f.write(enc_data)
+            messagebox.showinfo("成功", f"API 配置已加密保存至:\n{LQA_CONFIG_FILE}")
+        except Exception as e:
+            messagebox.showerror("错误", f"保存配置失败 (请检查目录是否有写入权限):\n{e}")
+
+    def manual_load_config(self):
+        filepath = filedialog.askopenfilename(
+            title="选择 API 配置文件",
+            filetypes=[("Encrypted Config", "*.enc"), ("All Files", "*.*")],
+            initialdir=CONFIG_DIR  # 修改为全局统一配置目录
+        )
+        if filepath:
+            self.load_config(filepath)
+
+    def load_config(self, filepath=LQA_CONFIG_FILE):
+        if os.path.exists(filepath):
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    enc_data = f.read()
+                data = decrypt_data(enc_data)
+                self.api_endpoint.set(data.get("endpoint", ""))
+                self.api_key.set(data.get("api_key", ""))
+                
+                # 如果是手动加载的，给个成功提示
+                if filepath != LQA_CONFIG_FILE:
+                    messagebox.showinfo("成功", "配置文件加载成功！")
+            except Exception as e:
+                if filepath != LQA_CONFIG_FILE:
+                    messagebox.showerror("错误", f"配置文件解析失败或已损坏:\n{e}")
+                else:
+                    print(f"自动加载配置失败: {e}")
+
+    def browse_file(self):
+        filepath = filedialog.askopenfilename(filetypes=[("Excel files", "*.xlsx")])
+        if filepath:
+            self.file_path.set(filepath)
+            default_output = filepath.replace(".xlsx", "_CheckedResult.xlsx")
+            self.output_path.set(default_output)
+
+    def browse_output_file(self):
+        filepath = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")],
+            title="选择保存前缀位置"
+        )
+        if filepath:
+            self.output_path.set(filepath)
+
+    def log(self, message):
+        self.parent.after(0, self._append_log, message)
+
+    def _append_log(self, message):
+        self.log_area.config(state='normal')
+        self.log_area.insert(tk.END, message + "\n")
+        self.log_area.see(tk.END)
+        self.log_area.config(state='disabled')
+
+    def load_sheets(self):
+        """扫描 Excel 中的所有 Sheet 并加载到列表"""
+        input_file = self.file_path.get()
+        if not input_file:
+            messagebox.showerror("错误", "请先在上方选择输入 Excel 文件！")
+            return
+        try:
+            self.log("正在扫描工作表 (Sheet)...")
+            self.parent.update()  # 替换 self.root.update()
+            
+            wb = openpyxl.load_workbook(input_file, read_only=True)
+            sheets = wb.sheetnames
+            wb.close()
+            
+            self.sheet_listbox.delete(0, tk.END)
+            for s in sheets:
+                self.sheet_listbox.insert(tk.END, s)
+                
+            self.log(f"✅ 成功扫描到 {len(sheets)} 个工作表。")
+        except Exception as e:
+            self.log(f"❌ 扫描工作表失败: {e}")
+            messagebox.showerror("错误", f"读取工作表失败：\n{e}")
+
+    def load_episodes(self):
+        """扫描选中的 Sheet 中的集数（带去重与自然排序）"""
+        input_file = self.file_path.get()
+        if not input_file:
+            messagebox.showerror("错误", "请先在上方选择输入 Excel 文件！")
+            return
+            
+        try:
+            c_ep = int(self.col_ep.get())
+            r_start = int(self.row_start.get())
+            
+            self.log("正在扫描集数，请稍候...")
+            self.parent.update()  # 替换 self.root.update()
+            
+            wb = openpyxl.load_workbook(input_file, data_only=True)
+            
+            # --- 核心：只在选中的 Sheet 中扫描集数 ---
+            selected_sheet_indices = self.sheet_listbox.curselection()
+            if selected_sheet_indices:
+                target_sheets = [self.sheet_listbox.get(i) for i in selected_sheet_indices]
+            else:
+                target_sheets = [wb.sheetnames[0]] # 默认第一个
+            
+            episodes = set()
+            for sheet_name in target_sheets:
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    for row in range(r_start, ws.max_row + 1):
+                        ep_val = str(ws.cell(row=row, column=c_ep).value or "未分类集数").strip()
+                        if ep_val:
+                            episodes.add(ep_val)
+            wb.close()
+            
+            def natural_sort_key(s):
+                return [int(text) if text.isdigit() else text.lower() for text in re.split('([0-9]+)', s)]
+                
+            sorted_eps = sorted(list(episodes), key=natural_sort_key)
+            
+            self.ep_listbox.delete(0, tk.END)
+            for ep in sorted_eps:
+                self.ep_listbox.insert(tk.END, ep)
+                
+            self.log(f"✅ 成功从目标 Sheet 中扫描了 {len(sorted_eps)} 个独立集数。")
+            
+        except Exception as e:
+            self.log(f"❌ 扫描集数失败: {e}")
+            messagebox.showerror("错误", f"读取集数失败，请检查格式或列号是否正确：\n{e}")
+
+    def start_processing(self):
+        if not self.file_path.get() or not self.output_path.get():
+            messagebox.showerror("错误", "请先选择输入文件并设置输出路径！")
+            return
+        
+        self.stop_flag = False
+        self.total_tokens_used = 0 
+        self.var_stats.set("正在初始化任务...") # <--- 新增状态更新
+        self.btn_start.config(state="disabled")
+        self.btn_load_eps.config(state="disabled")
+        self.btn_load_sheets.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.log_area.config(state='normal')
+        self.log_area.delete(1.0, tk.END)
+        self.log_area.config(state='disabled')
+        
+        threading.Thread(target=self.process_excel_worker, daemon=True).start()
+
+    def stop_processing(self):
+        self.stop_flag = True
+        self.btn_stop.config(state="disabled")
+        self.log("⚠️ 收到停止指令！当前批次请求完成后将安全退出...")
+
+    def estimate_tokens(self, text):
+        try:
+            import tiktoken
+            encoding = tiktoken.get_encoding('cl100k_base')
+            return len(encoding.encode(text))
+        except ImportError:
+            return int(len(str(text)) * 1.5)
+
+    def build_prompt(self, target_lang_name, target_lang_code, additional_context, with_src, glossary_str=""):
+        if target_lang_code in NO_SPACE_LANGS:
+            concat_rule = f"Since {target_lang_name} does not use spaces between words, if a sentence spans across multiple lines (IDs), treat them as directly connected without any spaces when evaluating context and grammar."
+        else:
+            concat_rule = f"Since {target_lang_name} uses spaces between words, if a sentence spans across multiple lines (IDs), treat them as connected with a space when evaluating context and grammar."
+
+        # === 动态注入术语表约束指令 ===
+        tb_prompt = ""
+        if glossary_str:
+            tb_prompt = f"\n# Mandatory Glossary (STRICTLY enforce these terms in translation):\n{glossary_str}"
+
+        if with_src:
+            sys_prompt = f"""# System Role:
+You are an expert in subtitle localization and Language Quality Assurance (LQA).
+# Context:
+- Target Language: {target_lang_name} ({target_lang_code})
+- Continues Rule: {concat_rule}
+- Reqs: {additional_context}{tb_prompt}
+# JSON Fields:
+i: id
+s: Source text (Original)
+t: Translation (To be reviewed)
+r: Revised translation (Final localized output)
+# Format:
+In: [{{\"i\":\"1\",\"s\":\"Hello\",\"t\":\"哈楼\"}}]
+Out: {{\"result\":[{{\"i\":\"1\",\"r\":\"你好\"}}]}}
+# Task:
+STRICT BILINGUAL REVIEW: Deeply compare `t` against `s`. Fix ALL mistranslations, omissions, unidiomatic expressions, spelling, and grammar errors in `t` to ensure accurate localization. Return ONLY valid minified JSON.
+"""
+        else:
+            sys_prompt = f"""# System Role:
+You are an expert in subtitle localization and Language Quality Assurance (LQA).
+# Context:
+- Target Language: {target_lang_name} ({target_lang_code})
+- Continues Rule: {concat_rule}
+- Reqs: {additional_context}{tb_prompt}
+# JSON Fields:
+i: id
+t: Translation (To be reviewed)
+r: Revised translation (Fixed output)
+# Format:
+In: [{{\"i\":\"1\",\"t\":\"哈楼\"}}]
+Out: {{\"result\":[{{\"i\":\"1\",\"r\":\"哈喽\"}}]}}
+# Task:
+Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY valid minified JSON.
+"""
+        return sys_prompt
+    
+    def get_rich_text_diff(self, old_text, new_text):
+        # 如果没有变动，直接返回两个纯文本
+        if old_text == new_text:
+            return old_text, new_text
+
+        blue_font = InlineFont(color="0000FF") # 原始译文的变动用蓝色
+        red_font = InlineFont(color="FF0000")  # 修改后的变动用红色
+        
+        # 【核心修复1】：显式定义黑色无加粗字体，彻底切断 Excel 颜色溢出
+        default_font = InlineFont(color="000000", b=False) 
+        
+        rich_old = CellRichText()
+        rich_new = CellRichText()
+        
+        matcher = difflib.SequenceMatcher(None, old_text, new_text)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'equal':
+                # 不再直接 append 字符串，而是用 default_font 锁死黑色
+                rich_old.append(TextBlock(font=default_font, text=old_text[i1:i2]))
+                rich_new.append(TextBlock(font=default_font, text=new_text[j1:j2]))
+            elif tag == 'insert':
+                rich_new.append(TextBlock(font=red_font, text=new_text[j1:j2]))
+            elif tag == 'delete':
+                rich_old.append(TextBlock(font=blue_font, text=old_text[i1:i2]))
+            elif tag == 'replace':
+                rich_old.append(TextBlock(font=blue_font, text=old_text[i1:i2]))
+                rich_new.append(TextBlock(font=red_font, text=new_text[j1:j2]))
+                
+        return rich_old, rich_new
+    
+    def process_excel_worker(self):
+        try:
+            import time
+            import threading
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
+            input_file = self.file_path.get()
+            output_file_base = self.output_path.get()
+            
+            c_src = int(self.col_src.get())
+            c_tgt = int(self.col_tgt.get())
+            c_ep = int(self.col_ep.get())
+            c_res = int(self.col_res.get())
+            r_start = int(self.row_start.get())
+            
+            with_src = self.var_with_source.get()
+            t_limit = int(self.token_limit.get())
+            additional_context = self.context_text.get("1.0", tk.END).strip()
+            output_mode = self.var_output_mode.get()
+
+            ui_lang_name = self.lang_box.get()
+            target_lang_code = LANGUAGES_MAP.get(ui_lang_name, ui_lang_name)
+            
+            ui_model_name = self.model_box.get()
+            actual_deployment_name = ENGINES_MAP.get(ui_model_name, ui_model_name)
+
+            selected_indices = self.ep_listbox.curselection()
+            selected_episodes = [self.ep_listbox.get(i) for i in selected_indices]
+            
+            selected_sheet_indices = self.sheet_listbox.curselection()
+            
+            self.log(f"正在加载原始 Excel 文件: {input_file}")
+            wb = openpyxl.load_workbook(input_file)
+            
+            if selected_sheet_indices:
+                target_sheets = [self.sheet_listbox.get(i) for i in selected_sheet_indices]
+            else:
+                target_sheets = [wb.sheetnames[0]]
+                
+            # === 拦截校验：检查是否配置了 API ===
+            api_endpoint_val = self.api_endpoint.get().strip()
+            api_key_val = self.api_key.get().strip()
+            
+            if not api_endpoint_val or not api_key_val:
+                self.log("❌ 错误：请求被拦截。请先在界面最上方配置并保存 API 接口信息！")
+                self.parent.after(0, lambda: messagebox.showerror("错误", "API Endpoint 和 Key 不能为空，请先配置！"))
+                return
+
+            client = AzureOpenAI(
+                azure_endpoint=api_endpoint_val,
+                api_key=api_key_val,
+                api_version=DEFAULT_API_VERSION
+            )
+
+            # ================= 新增：解析术语表文件 =================
+            glossary_str = ""
+            if self.var_use_tb.get():
+                tb_path = self.tb_file_path.get().strip()
+                tb_scol = self.tb_col_src.get().strip()
+                tb_tcol = self.tb_col_tgt.get().strip()
+                tb_typecol = self.tb_col_type.get().strip()
+                
+                if not tb_path or not os.path.exists(tb_path):
+                    self.log("❌ 错误：启用了术语表约束，但文件路径无效！")
+                    self.root.after(0, lambda: messagebox.showerror("错误", "术语表文件不存在！"))
+                    return
+                    
+                self.log(f"正在加载并提取术语表: {os.path.basename(tb_path)}")
+                term_list = []
+                try:
+                    import csv
+                    if tb_path.lower().endswith('.csv'):
+                        with open(tb_path, 'r', encoding='utf-8-sig') as f:
+                            reader = csv.DictReader(f)
+                            for row in reader:
+                                s = row.get(tb_scol, "").strip() if row.get(tb_scol) else ""
+                                t = row.get(tb_tcol, "").strip() if row.get(tb_tcol) else ""
+                                typ = row.get(tb_typecol, "").strip() if row.get(tb_typecol) else ""
+                                if s and t:
+                                    term_list.append(f"- {s}: {t} ({typ})" if typ else f"- {s}: {t}")
+                    else:
+                        wb_tb = openpyxl.load_workbook(tb_path, data_only=True)
+                        ws_tb = wb_tb.active
+                        headers = [str(cell.value).strip() if cell.value else "" for cell in ws_tb[1]]
+                        if tb_scol in headers and tb_tcol in headers:
+                            s_idx = headers.index(tb_scol)
+                            t_idx = headers.index(tb_tcol)
+                            type_idx = headers.index(tb_typecol) if tb_typecol in headers else -1
+                            for row in ws_tb.iter_rows(min_row=2, values_only=True):
+                                s = str(row[s_idx]).strip() if row[s_idx] else ""
+                                t = str(row[t_idx]).strip() if row[t_idx] else ""
+                                typ = str(row[type_idx]).strip() if type_idx != -1 and row[type_idx] else ""
+                                if s and t and s != 'None' and t != 'None':
+                                    term_list.append(f"- {s}: {t} ({typ})" if typ else f"- {s}: {t}")
+                        wb_tb.close()
+                        
+                    if term_list:
+                        glossary_str = "\n".join(term_list)
+                        self.log(f"✅ 成功提取 {len(term_list)} 条术语用于 AI 强制约束。")
+                    else:
+                        self.log("⚠️ 术语表提取为空，请检查 CSV/Excel 的列名是否输入正确。")
+                except Exception as e:
+                    self.log(f"❌ 读取术语表失败: {e}")
+                    self.root.after(0, lambda: messagebox.showerror("错误", f"读取术语表失败:\n{e}"))
+                    return
+            # ========================================================
+
+            # 传入解析好的 glossary_str，生成最终包含术语规则的提示词
+            sys_prompt = self.build_prompt(ui_lang_name, target_lang_code, additional_context, with_src, glossary_str)
+
+            # ---------------- 注入：术语检查前置准备 ----------------
+            enable_term_check = self.enable_term_check_var.get()
+            selected_indices = self.type_listbox.curselection()
+            active_types = [self.type_listbox.get(i) for i in selected_indices]
+            ignore_case = self.ignore_case_var.get()
+            
+            term_list = []
+            
+            # 只有当总开关勾选时，才执行术语表的读取和加载
+            if enable_term_check:
+                term_file = self.term_file_path.get()
+                if term_file and os.path.exists(term_file):
+                    try:
+                        from openpyxl.utils import column_index_from_string
+                        src_idx = column_index_from_string(self.term_src_col.get().strip().upper()) - 1
+                        tgt_idx = column_index_from_string(self.term_tgt_col.get().strip().upper()) - 1
+                        type_idx = column_index_from_string(self.term_type_col.get().strip().upper()) - 1
+                        
+                        term_df = pd.read_excel(term_file)
+                        for _, tr in term_df.iterrows():
+                            row_type = str(tr.iloc[type_idx]).strip() if type_idx < len(tr) else ""
+                            is_partial = (row_type in active_types) if active_types else False
+                                
+                            t_src = str(tr.iloc[src_idx]).strip() if src_idx < len(tr) else ""
+                            t_tgt = str(tr.iloc[tgt_idx]).strip() if tgt_idx < len(tr) else ""
+                            if t_src and t_tgt and t_src != 'nan' and t_tgt != 'nan':
+                                term_list.append({
+                                    'src': t_src, 'tgt': t_tgt, 'is_partial': is_partial
+                                })
+                                
+                        self.log(f"成功加载 {len(term_list)} 条术语用于检查。")
+                    except Exception as e:
+                        self.log(f"术语表加载异常，将跳过术语检查: {e}")
+
+            from openpyxl.utils import column_index_from_string
+            term_out_col_letter = self.term_output_col.get().strip().upper()
+            try:
+                term_out_col_idx = column_index_from_string(term_out_col_letter)
+            except:
+                term_out_col_idx = c_res + 1
+            # --------------------------------------------------------
+
+            # === 1. 预扫描：构建任务池并计算总集数 ===
+            all_tasks = []
+            
+            if output_mode == "merged":
+                for s_name in target_sheets:
+                    if s_name in wb.sheetnames:
+                        wb[s_name].cell(row=r_start-1, column=c_res, value="Spell Check Result (AI)")
+
+            for sheet_name in target_sheets:
+                if sheet_name not in wb.sheetnames:
+                    continue
+                ws = wb[sheet_name]
+                
+                headers = []
+                for r in range(1, r_start):
+                    headers.append([ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)])
+
+                episodes_data = {}
+                for row in range(r_start, ws.max_row + 1):
+                    tgt_text = ws.cell(row=row, column=c_tgt).value
+                    if not tgt_text:
+                        continue
+                    
+                    ep_val = str(ws.cell(row=row, column=c_ep).value or "未分类集数").strip()
+                    original_row_values = [ws.cell(row=row, column=c).value for c in range(1, ws.max_column + 1)]
+                    
+                    # === 调整 JSON 字段拼装顺序，让原文(s)排在译文(t)前面 ===
+                    item = {"i": str(row)}
+                    if with_src:
+                        src_text = ws.cell(row=row, column=c_src).value
+                        item["s"] = str(src_text) if src_text else ""
+                    item["t"] = str(tgt_text)
+                    # =======================================================
+                    
+                    if ep_val not in episodes_data:
+                        episodes_data[ep_val] = []
+                    
+                    episodes_data[ep_val].append({
+                        "id": str(row),
+                        "item": item,
+                        "original_row_values": original_row_values
+                    })
+                    
+                for ep_name, rows_in_ep in episodes_data.items():
+                    if selected_episodes and ep_name not in selected_episodes:
+                        continue
+                    all_tasks.append({
+                        "sheet_name": sheet_name,
+                        "ep_name": ep_name,
+                        "rows_in_ep": rows_in_ep,
+                        "headers": headers,
+                        "ws": ws
+                    })
+
+            total_eps = len(all_tasks)
+            success_count = 0
+            fail_count = 0
+            error_logs = []
+            
+            if total_eps == 0:
+                self.log("⚠️ 没有找到需要处理的集数！")
+                self.parent.after(0, lambda: self.btn_start.config(state="normal"))
+                return
+            
+            # ================= 核心修改：多线程调度设置 =================
+            excel_lock = threading.Lock()
+            enable_mt = self.use_multithread_var.get()
+            max_threads = self.thread_count_var.get() if enable_mt else 1
+            max_retries = self.retry_count_var.get() # <--- 新增：读取设置的重试次数
+
+            def process_episode(current_idx, task):
+                nonlocal success_count, fail_count, error_logs
+
+                # 这里原来是 break，改为 return，结束当前集数的处理
+                if self.stop_flag:
+                    return
+                    
+                sheet_name = task["sheet_name"]
+                ep_name = task["ep_name"]
+                rows_in_ep = task["rows_in_ep"]
+                headers = task["headers"]
+                ws = task["ws"]
+
+                self.parent.after(0, lambda c=current_idx, t=total_eps, s=success_count, f=fail_count: 
+                                self.var_stats.set(f"正在处理第{c}集，共{t}集，成功{s}集，失败{f}集"))
+                self.log(f"\n====== 处理中: Sheet [{sheet_name}] -> 集数 [{ep_name}] (共 {len(rows_in_ep)} 行) ======")
+
+                current_batch = []
+                current_tokens = 0
+                episode_results = []
+                has_error = False
+                error_msg = ""
+
+                # 发送请求 (不写入，多线程并发执行)
+                for idx, item_data in enumerate(rows_in_ep):
+                    row_item = item_data["item"]
+                    item_json_str = json.dumps(row_item, ensure_ascii=False)
+                    item_tokens = self.estimate_tokens(item_json_str)
+                    
+                    # 触发条件 1：Token超限，需要发送当前批次
+                    if current_tokens + item_tokens > t_limit and current_batch:
+                        for attempt in range(max_retries + 1):
+                            try:
+                                res = self._send_batch_request(client, ui_model_name, actual_deployment_name, sys_prompt, current_batch)
+                                episode_results.extend(res)
+                                break  # 成功则跳出重试循环
+                            except Exception as e:
+                                if attempt < max_retries:
+                                    self.log(f"  ⚠️ 请求失败，等待2秒后进行第 {attempt + 1}/{max_retries} 次重试... ({str(e)})")
+                                    time.sleep(2) # 稍微暂停，缓解 API 频率限制
+                                else:
+                                    has_error = True
+                                    error_msg = str(e)
+                                    break
+                                    
+                        if has_error:
+                            break  # 彻底失败，中止内部循环跳到失败拦截
+                            
+                        current_batch = []
+                        current_tokens = 0
+                        
+                    current_batch.append(row_item)
+                    current_tokens += item_tokens
+                    
+                    # 触发条件 2：到达最后一行的收尾批次
+                    if idx == len(rows_in_ep) - 1 and current_batch:
+                        for attempt in range(max_retries + 1):
+                            try:
+                                res = self._send_batch_request(client, ui_model_name, actual_deployment_name, sys_prompt, current_batch)
+                                episode_results.extend(res)
+                                break  # 成功则跳出重试循环
+                            except Exception as e:
+                                if attempt < max_retries:
+                                    self.log(f"  ⚠️ 请求失败，等待2秒后进行第 {attempt + 1}/{max_retries} 次重试... ({str(e)})")
+                                    time.sleep(2)
+                                else:
+                                    has_error = True
+                                    error_msg = str(e)
+                                    break
+                                    
+                        if has_error:
+                            break  # 彻底失败，中止内部循环跳到失败拦截
+
+                # 失败拦截
+                if has_error:
+                    with excel_lock:
+                        fail_count += 1
+                        error_logs.append([os.path.basename(input_file), f"[{sheet_name}] {ep_name}", error_msg])
+                    self.log(f"  ❌ 【检查失败拦截】本集已跳过写入。错误原因: {error_msg}")
+                    return # 这里原来是 continue，改为 return 跳出当前集数
+
+                # ================= 如果全部成功，排队获取写入锁，处理 Excel 写入 =================
+                with excel_lock:
+                    success_count += 1
+                    self.parent.after(0, lambda c=current_idx, t=total_eps, s=success_count, f=fail_count: 
+                                    self.var_stats.set(f"正在处理第{c}集，共{t}集，成功{s}集，失败{f}集"))
+
+                    res_mapping = {str(r.get("i", r.get("id"))): r.get("r", r.get("revisedTranslation", "")) for r in episode_results}
+
+                    try:
+                        if output_mode == "split":
+                            ep_wb = openpyxl.Workbook()
+                            ep_ws = ep_wb.active
+                            ep_ws.title = "LQA Result"
+                            
+                            for h_row_idx, h_row_vals in enumerate(headers, start=1):
+                                for col_idx, val in enumerate(h_row_vals, start=1):
+                                    ep_ws.cell(row=h_row_idx, column=col_idx, value=val)
+                                ep_ws.cell(row=h_row_idx, column=c_res, value="Spell Check Result (AI)")
+
+                            current_new_row_idx = r_start
+                            for item_data in rows_in_ep:
+                                # 1. 复制原表该行的所有基础数据（纯文本）
+                                for col_idx, val in enumerate(item_data["original_row_values"], start=1):
+                                    ep_ws.cell(row=current_new_row_idx, column=col_idx, value=val)
+
+                                row_id = item_data["id"]
+                                # 2. 提取原文、原译文、AI修改后译文
+                                try:
+                                    src_text = str(item_data["original_row_values"][c_src-1])
+                                except:
+                                    src_text = " ".join([str(x) for x in item_data["original_row_values"] if x])
+                                old_text = item_data["item"].get("t", item_data["item"].get("Translation", ""))
+                                new_text = res_mapping.get(row_id, old_text)
+                                
+                                # 3. 获取红蓝修改记录的富文本对象，并初始化原文富文本
+                                rich_old, rich_new = self.get_rich_text_diff(old_text, new_text)
+                                rich_src = src_text # 原文初始为普通字符串
+
+                                found_terms_display = []
+                                if term_list:
+                                    matched_src_terms = set()
+                                    matched_old_terms = set()
+                                    matched_new_terms = set()
+
+                                    def check_match(term_str, target_text, partial):
+                                        if partial:
+                                            parts = term_str.split()
+                                            if not parts: return False, []
+                                            for p in parts:
+                                                if ignore_case:
+                                                    if p.lower() not in target_text.lower(): return False, []
+                                                else:
+                                                    if p not in target_text: return False, []
+                                            return True, parts
+                                        else:
+                                            if ignore_case:
+                                                match = term_str.lower() in target_text.lower()
+                                            else:
+                                                match = term_str in target_text
+                                            return match, [term_str] if match else []
+
+                                    for term_obj in term_list:
+                                        t_src, t_tgt, is_partial = term_obj['src'], term_obj['tgt'], term_obj['is_partial']
+
+                                        # 检查 1: 原文
+                                        is_match_src, highlight_src = check_match(t_src, src_text, is_partial)
+                                        if is_match_src:
+                                            matched_src_terms.update(highlight_src)
+                                            found_terms_display.append(f"原:{t_src}{'(部分)' if is_partial else ''}")
+
+                                        # 检查 2: 原始译文
+                                        is_match_old, highlight_old = check_match(t_tgt, old_text, is_partial)
+                                        if is_match_old:
+                                            matched_old_terms.update(highlight_old)
+                                            found_terms_display.append(f"译:{t_tgt}{'(部分)' if is_partial else ''}")
+                                            
+                                        # 检查 3: AI修改后的新译文
+                                        is_match_new, highlight_new = check_match(t_tgt, new_text, is_partial)
+                                        if is_match_new:
+                                            matched_new_terms.update(highlight_new)
+                                            found_terms_display.append(f"改:{t_tgt}{'(部分)' if is_partial else ''}")
+
+                                    # 4. 执行绿色高亮覆盖 (各自用各自的匹配词去标绿，不再错位)
+                                    if matched_src_terms:
+                                        rich_src = self.apply_term_rich_text(rich_src, list(matched_src_terms), ignore_case)
+                                    if matched_old_terms:
+                                        rich_old = self.apply_term_rich_text(rich_old, list(matched_old_terms), ignore_case)
+                                    if matched_new_terms:
+                                        rich_new = self.apply_term_rich_text(rich_new, list(matched_new_terms), ignore_case)
+                                
+                                # 5. 覆盖写入三个列（原文、译文、结果）
+                                ep_ws.cell(row=current_new_row_idx, column=c_src).value = rich_src
+                                ep_ws.cell(row=current_new_row_idx, column=c_tgt).value = rich_old
+                                ep_ws.cell(row=current_new_row_idx, column=c_res).value = rich_new
+                                
+                                # 6. 写入展示列信息 (去重并保持顺序)
+                                if found_terms_display:
+                                    unique_display = list(dict.fromkeys(found_terms_display))
+                                    ep_ws.cell(row=current_new_row_idx, column=term_out_col_idx).value = " | ".join(unique_display)
+                                    
+                                ep_ws.cell(row=1, column=term_out_col_idx).value = "术语匹配结果"
+                                
+                                current_new_row_idx += 1
+                            
+                            safe_sheet_name = str(sheet_name).replace("/", "_").replace("\\", "_")
+                            safe_ep_name = str(ep_name).replace("/", "_").replace("\\", "_")
+                            out_dir = os.path.dirname(output_file_base)
+                            out_name = os.path.basename(output_file_base).replace(".xlsx", "")
+                            ep_output_file = os.path.join(out_dir, f"{out_name}_{safe_sheet_name}_{safe_ep_name}.xlsx")
+                            ep_wb.save(ep_output_file)
+                            self.log(f"  💾 【分发保存】{sheet_name} - {ep_name} 已成功保存。")
+                        else:
+                            for item_data in rows_in_ep:
+                                row_id = item_data["id"]
+                                mapping_row = int(row_id)
+                                
+                                # 1. 提取原文、原译文、AI修改后译文
+                                try:
+                                    src_text = str(item_data["original_row_values"][c_src-1])
+                                except:
+                                    src_text = " ".join([str(x) for x in item_data["original_row_values"] if x])
+                                old_text = item_data["item"].get("t", item_data["item"].get("Translation", ""))
+                                new_text = res_mapping.get(row_id, old_text)
+                                
+                                # 2. 获取红蓝修改记录的富文本对象，并初始化原文富文本
+                                rich_old, rich_new = self.get_rich_text_diff(old_text, new_text)
+                                rich_src = src_text
+
+                                found_terms_display = []
+                                if term_list:
+                                    matched_src_terms = set()
+                                    matched_old_terms = set()
+                                    matched_new_terms = set()
+
+                                    def check_match(term_str, target_text, partial):
+                                        if partial:
+                                            parts = term_str.split()
+                                            if not parts: return False, []
+                                            for p in parts:
+                                                if ignore_case:
+                                                    if p.lower() not in target_text.lower(): return False, []
+                                                else:
+                                                    if p not in target_text: return False, []
+                                            return True, parts 
+                                        else:
+                                            if ignore_case:
+                                                match = term_str.lower() in target_text.lower()
+                                            else:
+                                                match = term_str in target_text
+                                            return match, [term_str] if match else []
+
+                                    for term_obj in term_list:
+                                        t_src, t_tgt, is_partial = term_obj['src'], term_obj['tgt'], term_obj['is_partial']
+
+                                        # 检查 1: 原文
+                                        is_match_src, highlight_src = check_match(t_src, src_text, is_partial)
+                                        if is_match_src:
+                                            matched_src_terms.update(highlight_src)
+                                            found_terms_display.append(f"原:{t_src}{'(部分)' if is_partial else ''}")
+
+                                        # 检查 2: 原始译文
+                                        is_match_old, highlight_old = check_match(t_tgt, old_text, is_partial)
+                                        if is_match_old:
+                                            matched_old_terms.update(highlight_old)
+                                            found_terms_display.append(f"译:{t_tgt}{'(部分)' if is_partial else ''}")
+                                            
+                                        # 检查 3: AI修改后的新译文
+                                        is_match_new, highlight_new = check_match(t_tgt, new_text, is_partial)
+                                        if is_match_new:
+                                            matched_new_terms.update(highlight_new)
+                                            found_terms_display.append(f"改:{t_tgt}{'(部分)' if is_partial else ''}")
+
+                                    # 3. 执行绿色高亮覆盖 (独立无错位)
+                                    if matched_src_terms:
+                                        rich_src = self.apply_term_rich_text(rich_src, list(matched_src_terms), ignore_case)
+                                    if matched_old_terms:
+                                        rich_old = self.apply_term_rich_text(rich_old, list(matched_old_terms), ignore_case)
+                                    if matched_new_terms:
+                                        rich_new = self.apply_term_rich_text(rich_new, list(matched_new_terms), ignore_case)
+
+                                # 4. 覆盖写入三个列
+                                ws.cell(row=mapping_row, column=c_src).value = rich_src
+                                ws.cell(row=mapping_row, column=c_tgt).value = rich_old
+                                ws.cell(row=mapping_row, column=c_res).value = rich_new
+                                
+                                # 5. 写入展示列信息
+                                if found_terms_display:
+                                    unique_display = list(dict.fromkeys(found_terms_display))
+                                    ws.cell(row=mapping_row, column=term_out_col_idx).value = " | ".join(unique_display)
+                                    
+                                # 合并模式也需要表头
+                                ws.cell(row=r_start-1, column=term_out_col_idx).value = "术语匹配结果"
+                                
+                            wb.save(output_file_base)
+                            self.log(f"  💾 【合并进度追加】{sheet_name} - {ep_name} 已安全追加至原文件。")
+                    except Exception as e:
+                        self.log(f"  ⚠️ 写入或保存时出错: {e}")
+
+            # ================= 启动线程池或单线程运行 =================
+            if enable_mt:
+                self.log(f"\n🚀 已开启多线程并发，分配线程数: {max_threads}")
+                with ThreadPoolExecutor(max_workers=max_threads) as executor:
+                    futures = [executor.submit(process_episode, idx, t) for idx, t in enumerate(all_tasks, start=1)]
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            self.log(f"❌ 线程执行崩溃: {e}")
+            else:
+                for idx, t in enumerate(all_tasks, start=1):
+                    process_episode(idx, t)
+
+            # === 3. 生成错误报告 ===
+            if error_logs:
+                try:
+                    err_wb = openpyxl.Workbook()
+                    err_ws = err_wb.active
+                    err_ws.append(["文件名", "集数", "错误信息"])
+                    for log_entry in error_logs:
+                        err_ws.append(log_entry)
+                    
+                    out_dir = os.path.dirname(output_file_base)
+                    err_file = os.path.join(out_dir, f"LQA_Error_Report_{int(time.time())}.xlsx")
+                    err_wb.save(err_file)
+                    self.log(f"\n⚠️ 发现 {fail_count} 个请求失败的集数，错误报告已生成: {err_file}")
+                except Exception as e:
+                    self.log(f"\n⚠️ 错误报告生成失败: {e}")
+
+            # ================= 循环处理结束提示 =================
+            if self.stop_flag:
+                self.log(f"\n====== 🛑 检查已被手动终止 ======")
+                self.log(f"💰 本次共计消耗 Token: {self.total_tokens_used}")
+                self.parent.after(0, lambda: messagebox.showinfo("已终止", f"检查任务已终止。\n共消耗 Token: {self.total_tokens_used}\n成功: {success_count} 集, 失败: {fail_count} 集。"))
+            else:
+                self.log(f"\n====== ✨ 设定任务处理完成！ ======")
+                self.log(f"💰 本次共计消耗 Token: {self.total_tokens_used}")
+                self.parent.after(0, lambda: messagebox.showinfo("完成", f"所选任务处理完成！\n共消耗 Token: {self.total_tokens_used}\n成功: {success_count} 集, 失败: {fail_count} 集。"))
+
+        except Exception as e:
+            self.log(f"❌ 发生致命错误: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.parent.after(0, lambda: self.btn_start.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_load_eps.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_load_sheets.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
+            
+    def _send_batch_request(self, client, ui_model_name, actual_deployment_name, sys_prompt, batch_data):
+        # 抛出异常由外层捕获拦截
+        start_id = batch_data[0].get('i', batch_data[0].get('id'))
+        end_id = batch_data[-1].get('i', batch_data[-1].get('id'))
+        self.log(f"  -> 发送请求... [引擎: {ui_model_name}] (原表行号: {start_id} 至 {end_id})")
+        
+        user_prompt = f"# Work Data:\n{json.dumps(batch_data, ensure_ascii=False)}"
+        
+        target_temperature = 0.3
+        json_resp = True
+        
+        if '4o' not in ui_model_name and '4.1' not in ui_model_name:
+            target_temperature = 1.0
+            
+        if 'o1' in ui_model_name or 'o3' in ui_model_name or 'o4' in ui_model_name:
+            json_resp = False
+
+        request_kwargs = {
+            "model": actual_deployment_name,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": target_temperature
+        }
+        
+        if json_resp:
+            request_kwargs["response_format"] = {"type": "json_object"}
+        
+        response = client.chat.completions.create(**request_kwargs)
+        
+        if hasattr(response, 'usage') and response.usage:
+            used_tokens = response.usage.total_tokens
+            self.total_tokens_used += used_tokens
+            self.log(f"  [计量] 本次请求花费: {used_tokens} tokens | 累计花费: {self.total_tokens_used} tokens")
+            
+        resp_content = response.choices[0].message.content
+        
+        clean_content = resp_content.strip()
+        if clean_content.startswith("```json"):
+            clean_content = clean_content[7:]
+        elif clean_content.startswith("```"):
+            clean_content = clean_content[3:]
+        if clean_content.endswith("```"):
+            clean_content = clean_content[:-3]
+            
+        result_data = json.loads(clean_content.strip()).get("result", [])
+        self.log(f"  ✅ 成功接收 {len(result_data)} 行数据。")
+        
+        return result_data
+    
 
 # ======= 新增：用于术语检查报告的富文本导出 =======
 try:
@@ -2233,6 +3544,12 @@ ttk.Entry(tab_zip, textvariable=zip_out_var).grid(row=2, column=1, sticky="ew", 
 ttk.Button(tab_zip, text="浏览...", command=lambda: ask_dir(zip_out_var, "选择")).grid(row=2, column=2, padx=(5,0), pady=20)
 ttk.Button(tab_zip, text="开始打包", command=run_zip, style='TButton').grid(row=4, column=0, columnspan=3, pady=25, ipadx=20, ipady=5)
 
+# ================= TAB: LQA 智能拼写检查 =================
+# 直接调用 subtitle_tool 的通用滚动标签页生成器
+tab_lqa = create_scrollable_tab(nb_other, " LQA 拼写检查 ", padding=10)
+
+# 此时传进去的 tab_lqa 已经是一个自带滚动的内层 Frame 了
+lqa_tool_instance = LQA_App(tab_lqa)
 
 
 def build_style_tab(parent, font_v, size_v, col_v, ocol_v, mv_v, mlr_v, out_v, align_v, shad_v, bold_v, ita_v, alpha_v=None, oalpha_v=None):
