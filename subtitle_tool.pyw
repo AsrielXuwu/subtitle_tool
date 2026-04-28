@@ -10,7 +10,6 @@ import json
 import zipfile
 import math
 import platform
-import translators as ts
 import openpyxl
 from openpyxl.cell.rich_text import TextBlock, CellRichText
 from openpyxl.cell.text import InlineFont
@@ -99,7 +98,6 @@ NO_SPACE_LANGS = {
     "Chinese (Simplified)", "Chinese (Traditional, Taiwan)", "Chinese (Traditional, Hong Kong)", 
     "Japanese (日本語)", "Thai (ไทย)"
 }
-
 
 class LQA_App:
     def browse_tb_file(self):
