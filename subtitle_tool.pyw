@@ -4449,7 +4449,7 @@ update_m0_ui()
 # === 注意：确保完全删除了 原功能4（etab_eff） 区块的所有代码 ===
 
 # ------ 功能2: 根据字符重新分配 ------
-etab_tag = create_scrollable_tab(edit_nb, "根据[]重划定对白/画面字")
+etab_tag = create_scrollable_tab(edit_nb, "重划定对白/画面字")
 etab_tag.columnconfigure(1, weight=1)
 
 f_m2_cond, m2_logic_var, m2_c1_var, edit_m2_bracket, m2_c2_var, lb_m2_effs, m2_c3_var, lb_m2_styles = build_advanced_condition_ui(etab_tag, edit_in_var, "重划定判定条件 (都不勾选则默认全部划为普通对白)")
