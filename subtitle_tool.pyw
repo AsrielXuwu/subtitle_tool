@@ -467,13 +467,14 @@ class LQA_App:
         # --- 新增：6. 术语表约束配置 (可选) ---
         frame_tb = ttk.LabelFrame(self.scrollable_frame, text="6. 术语表约束配置 (向AI发送术语表，防止错误修改)", padding=10)
         frame_tb.pack(fill="x", padx=10, pady=5)
+        frame_tb.columnconfigure(1, weight=1)
         
         self.var_use_tb = tk.BooleanVar(value=False)
         ttk.Checkbutton(frame_tb, text="启用术语约束 (勾选后会将下列文件中的术语发给AI)", variable=self.var_use_tb).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
         
-        ttk.Label(frame_tb, text="术语表文件:").grid(row=1, column=0, sticky="w")
+        ttk.Label(frame_tb, text="术语表文件:").grid(row=1, column=0, sticky="ew")
         self.tb_file_path = tk.StringVar()
-        DnDEntry(frame_tb, textvariable=self.tb_file_path, width=50).grid(row=1, column=1, padx=5, sticky="w")
+        DnDEntry(frame_tb, textvariable=self.tb_file_path, width=50).grid(row=1, column=1, padx=5, sticky="ew")
         ttk.Button(frame_tb, text="浏览...", command=self.browse_tb_file).grid(row=1, column=2)
 
         tb_col_frame = ttk.Frame(frame_tb)
