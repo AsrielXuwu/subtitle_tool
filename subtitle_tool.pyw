@@ -1,9 +1,9 @@
 import difflib
 import tkinter as tk
-from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
 from tkinter import scrolledtext
+from tkinterdnd2 import TkinterDnD, DND_FILES
 import pandas as pd
 import os
 import re
