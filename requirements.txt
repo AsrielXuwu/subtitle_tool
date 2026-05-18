@@ -5,3 +5,4 @@ pillow
 translators
 openai
 tiktoken
+tkinterdnd2

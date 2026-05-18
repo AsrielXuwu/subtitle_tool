@@ -1,5 +1,6 @@
 import difflib
 import tkinter as tk
+from tkinterdnd2 import TkinterDnD, DND_FILES
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
 from tkinter import scrolledtext
@@ -10,6 +11,7 @@ import json
 import zipfile
 import math
 import platform
+import urllib.parse
 import openpyxl
 from openpyxl.cell.rich_text import TextBlock, CellRichText
 from openpyxl.cell.text import InlineFont
@@ -235,7 +237,7 @@ class LQA_App:
 
         # --- Row 0: 术语表文件与输出列 ---
         ttk.Label(frame_term, text="术语表文件:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame_term, textvariable=self.term_file_path, width=35).grid(row=0, column=1, columnspan=4, padx=5, sticky="we")
+        DnDEntry(frame_term, textvariable=self.term_file_path, width=35).grid(row=0, column=1, columnspan=4, padx=5, sticky="we")
         ttk.Button(frame_term, text="浏览...", command=self.browse_term_file).grid(row=0, column=5, padx=5)
 
         ttk.Label(frame_term, text="输出展示列(如G):").grid(row=0, column=6, sticky="w", padx=(5, 2))
@@ -295,11 +297,11 @@ class LQA_App:
         frame_file.columnconfigure(1, weight=1)
         
         ttk.Label(frame_file, text="输入 Excel:").grid(row=0, column=0, sticky="w")
-        ttk.Entry(frame_file, textvariable=self.file_path, width=60).grid(row=0, column=1, padx=5, pady=2, sticky="we")
+        DnDEntry(frame_file, textvariable=self.file_path, width=60).grid(row=0, column=1, padx=5, pady=2, sticky="we")
         ttk.Button(frame_file, text="浏览...", command=self.browse_file).grid(row=0, column=2, pady=2)
 
         ttk.Label(frame_file, text="输出位置(前缀):").grid(row=1, column=0, sticky="w")
-        ttk.Entry(frame_file, textvariable=self.output_path, width=60).grid(row=1, column=1, padx=5, pady=2, sticky="we")
+        DnDEntry(frame_file, textvariable=self.output_path, width=60).grid(row=1, column=1, padx=5, pady=2, sticky="we")
         ttk.Button(frame_file, text="另存为...", command=self.browse_output_file).grid(row=1, column=2, pady=2)
         
         # --- 性能设置区 (新增) ---
@@ -471,7 +473,7 @@ class LQA_App:
         
         ttk.Label(frame_tb, text="术语表文件:").grid(row=1, column=0, sticky="w")
         self.tb_file_path = tk.StringVar()
-        ttk.Entry(frame_tb, textvariable=self.tb_file_path, width=50).grid(row=1, column=1, padx=5, sticky="w")
+        DnDEntry(frame_tb, textvariable=self.tb_file_path, width=50).grid(row=1, column=1, padx=5, sticky="w")
         ttk.Button(frame_tb, text="浏览...", command=self.browse_tb_file).grid(row=1, column=2)
 
         tb_col_frame = ttk.Frame(frame_tb)
@@ -3267,7 +3269,42 @@ def scan_sheets():
 
 # ================= GUI 界面构建 =================
 
-root = tk.Tk()
+# ================= 新增：支持拖拽的自定义 Entry 组件 (Win/Mac 跨平台版) =================
+class DnDEntry(ttk.Entry):
+    def __init__(self, master=None, **kw):
+        super().__init__(master, **kw)
+        self.drop_target_register(DND_FILES)
+        self.dnd_bind('<<Drop>>', self.drop_handler)
+
+    def drop_handler(self, event):
+        # 1. 使用 tk.splitlist 安全分割，自动处理路径中自带的大括号或空格
+        paths = self.tk.splitlist(event.data)
+        if not paths:
+            return
+            
+        # 2. 取第一个拖入的文件/文件夹
+        path = paths[0] 
+        
+        # 3. macOS 核心兼容处理：去除 file:// 前缀，并解码 URL 编码 (如 %20 还原为空格，中文乱码还原)
+        if platform.system() == "Darwin" or path.startswith("file://"):
+            if path.startswith("file://"):
+                # 如果是 file://localhost/，保留后面的 /
+                if path.startswith("file://localhost/"):
+                    path = path[16:]
+                else:
+                    path = path[7:]
+            path = urllib.parse.unquote(path)
+            
+        # 4. 更新绑定的 StringVar 或直接插入文本
+        var_name = self.cget('textvariable')
+        if var_name:
+            self.tk.globalsetvar(var_name, path)
+        else:
+            self.delete(0, tk.END)
+            self.insert(0, path)
+# ===================================================================================
+
+root = TkinterDnD.Tk()  # 替换原来的 tk.Tk()，让主窗口赋予拖拽超能力
 root.title("字幕拆分与合并工具箱")
 root.geometry("770x670")
 root.minsize(500, 500)
@@ -3331,7 +3368,7 @@ cb_sheet = ttk.Combobox(f_mode, textvariable=split_sheet_var, state="disabled", 
 cb_sheet.pack(side=tk.LEFT, padx=5)
 
 ttk.Label(tab_split, text="双语 XLSX/CSV 文件:").grid(row=1, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_split, textvariable=split_in_var).grid(row=1, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_split, textvariable=split_in_var).grid(row=1, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_split, text="浏览...", command=lambda: ask_file(split_in_var, "选择文件", [("Excel", "*.xlsx"), ("CSV", "*.csv")])).grid(row=1, column=2, padx=(5,0), pady=10)
 
 f_s = ttk.Frame(tab_split)
@@ -3356,11 +3393,11 @@ def update_split_mode():
         split_cols_var.set("A, B, C, D")
 
 ttk.Label(tab_split, text="源语言 SRT 输出目录:").grid(row=3, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_split, textvariable=split_out_src_var).grid(row=3, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_split, textvariable=split_out_src_var).grid(row=3, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_split, text="浏览...", command=lambda: ask_dir(split_out_src_var, "选择目录")).grid(row=3, column=2, padx=(5,0), pady=10)
 
 ttk.Label(tab_split, text="目标语言 SRT 输出目录(可选):").grid(row=4, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_split, textvariable=split_out_tgt_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_split, textvariable=split_out_tgt_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_split, text="浏览...", command=lambda: ask_dir(split_out_tgt_var, "选择目录")).grid(row=4, column=2, padx=(5,0), pady=10)
 
 ttk.Button(tab_split, text="开始拆分", command=run_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
@@ -3380,11 +3417,11 @@ ttk.Radiobutton(f_merge_mode, text="模式1: 番茄导出格式", variable=merge
 ttk.Radiobutton(f_merge_mode, text="模式2: CPP格式", variable=merge_mode_var, value=2).pack(side=tk.LEFT, padx=5)
 
 ttk.Label(tab_merge, text="源语言 SRT 目录:").grid(row=1, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_merge, textvariable=merge_src_var).grid(row=1, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_merge, textvariable=merge_src_var).grid(row=1, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_merge, text="浏览...", command=lambda: ask_dir(merge_src_var, "选择目录")).grid(row=1, column=2, padx=(5,0), pady=10)
 
 ttk.Label(tab_merge, text="目标语言 SRT 目录(可选):").grid(row=2, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_merge, textvariable=merge_tgt_var).grid(row=2, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_merge, textvariable=merge_tgt_var).grid(row=2, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_merge, text="浏览...", command=lambda: ask_dir(merge_tgt_var, "选择目录")).grid(row=2, column=2, padx=(5,0), pady=10)
 
 f_m = ttk.Frame(tab_merge)
@@ -3395,7 +3432,7 @@ ttk.Label(f_m, text="目标列名:").pack(side=tk.LEFT)
 ttk.Entry(f_m, textvariable=merge_tgt_name_var, width=10).pack(side=tk.LEFT, padx=(5,0))
 
 ttk.Label(tab_merge, text="保存为 XLSX 文件:").grid(row=4, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_merge, textvariable=merge_out_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_merge, textvariable=merge_out_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_merge, text="浏览...", command=lambda: ask_save_file(merge_out_var, "保存", [("Excel", "*.xlsx")], ".xlsx")).grid(row=4, column=2, padx=(5,0), pady=10)
 ttk.Button(tab_merge, text="开始合并", command=run_merge, style='TButton').grid(row=5, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
 
@@ -3411,7 +3448,7 @@ rep_cols_var = tk.StringVar(value=current_presets_rep[0] if current_presets_rep 
 rep_match_mode_var = tk.IntVar(value=0)
 
 ttk.Label(tab_rep, text="QA 报告 (Excel/CSV):").grid(row=0, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_rep, textvariable=rep_report_var).grid(row=0, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_rep, textvariable=rep_report_var).grid(row=0, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_rep, text="浏览...", command=lambda: ask_file(rep_report_var, "选择文件", [("Excel", "*.xlsx"), ("CSV", "*.csv")])).grid(row=0, column=2, padx=(5,0), pady=10)
 
 # ====== 新增：匹配模式选择 UI ======
@@ -3429,11 +3466,11 @@ ttk.Button(f_r, text="保存预设", command=lambda: action_save_preset(rep_cols
 ttk.Button(f_r, text="删除预设", command=lambda: action_del_preset(rep_cols_var, current_presets_rep, cb_r, PRESET_FILE_REP)).pack(side=tk.LEFT, padx=5)
 
 ttk.Label(tab_rep, text="需修改的 SRT 文件夹:").grid(row=3, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_rep, textvariable=rep_srt_var).grid(row=3, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_rep, textvariable=rep_srt_var).grid(row=3, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_rep, text="浏览...", command=lambda: ask_dir(rep_srt_var, "选择目录")).grid(row=3, column=2, padx=(5,0), pady=10)
 
 ttk.Label(tab_rep, text="保存替换展示表格:").grid(row=4, column=0, sticky="e", padx=(0,10), pady=10)
-ttk.Entry(tab_rep, textvariable=rep_out_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
+DnDEntry(tab_rep, textvariable=rep_out_var).grid(row=4, column=1, sticky="ew", padx=5, pady=10)
 ttk.Button(tab_rep, text="浏览...", command=lambda: ask_save_file(rep_out_var, "保存", [("Excel", "*.xlsx")], ".xlsx")).grid(row=4, column=2, padx=(5,0), pady=10)
 
 ttk.Button(tab_rep, text="开始替换", command=run_replace, style='TButton').grid(row=5, column=0, columnspan=3, pady=15, ipadx=20, ipady=5)
@@ -3450,18 +3487,18 @@ bi_err_rep_var = tk.StringVar() # 新增：报告路径变量
 bi_split_mode_var = tk.IntVar(value=1) # 新增：默认选中模式1
 
 ttk.Label(tab_bi, text="双语 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_srt_var).grid(row=0, column=1, sticky="ew", padx=5)
+DnDEntry(tab_bi, textvariable=bi_srt_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_srt_var, "选择输入文件夹")).grid(row=0, column=2, padx=5)
 
 ttk.Label(tab_bi, text="【上方语言】保存目录:").grid(row=1, column=0, sticky="e", pady=5, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_out_dir1_var).grid(row=1, column=1, sticky="ew", padx=5)
+DnDEntry(tab_bi, textvariable=bi_out_dir1_var).grid(row=1, column=1, sticky="ew", padx=5)
 ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir1_var, "选择上方语言输出目录")).grid(row=1, column=2, padx=5)
 
 ttk.Label(tab_bi, text="上方语言文件后缀:").grid(row=2, column=0, sticky="e", pady=5, padx=(0,10))
 ttk.Entry(tab_bi, textvariable=bi_suf1_var, width=15).grid(row=2, column=1, sticky="w", padx=5)
 
 ttk.Label(tab_bi, text="【下方语言】保存目录:").grid(row=3, column=0, sticky="e", pady=5, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_out_dir2_var).grid(row=3, column=1, sticky="ew", padx=5)
+DnDEntry(tab_bi, textvariable=bi_out_dir2_var).grid(row=3, column=1, sticky="ew", padx=5)
 ttk.Button(tab_bi, text="浏览...", command=lambda: ask_dir(bi_out_dir2_var, "选择下方语言输出目录")).grid(row=3, column=2, padx=5)
 
 ttk.Label(tab_bi, text="下方语言文件后缀:").grid(row=4, column=0, sticky="e", pady=5, padx=(0,10))
@@ -3469,7 +3506,7 @@ ttk.Entry(tab_bi, textvariable=bi_suf2_var, width=15).grid(row=4, column=1, stic
 
 # 新增：空白行报告导出选项
 ttk.Label(tab_bi, text="空白异常报告保存至(可选):").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_bi, textvariable=bi_err_rep_var).grid(row=5, column=1, sticky="ew", padx=5)
+DnDEntry(tab_bi, textvariable=bi_err_rep_var).grid(row=5, column=1, sticky="ew", padx=5)
 ttk.Button(tab_bi, text="浏览...", command=lambda: ask_save_file(bi_err_rep_var, "保存异常报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=5, column=2, padx=5)
 
 # ====== 新增：拆分模式选择区域 ======
@@ -3491,7 +3528,7 @@ ts_scr_var = tk.StringVar()
 ts_mode_var = tk.StringVar(value="SRT")
 
 ttk.Label(tab_ts, text="输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_ts, textvariable=ts_in_var).grid(row=0, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ts, textvariable=ts_in_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ts, text="浏览...", command=lambda: ask_dir(ts_in_var, "选择输入文件夹")).grid(row=0, column=2, padx=5)
 
 f_ts_mode = ttk.Frame(tab_ts)
@@ -3500,11 +3537,11 @@ ttk.Radiobutton(f_ts_mode, text="处理 SRT", variable=ts_mode_var, value="SRT")
 ttk.Radiobutton(f_ts_mode, text="处理 ASS", variable=ts_mode_var, value="ASS").pack(side=tk.LEFT, padx=5)
 
 ttk.Label(tab_ts, text="对白输出目录:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_ts, textvariable=ts_norm_var).grid(row=2, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ts, textvariable=ts_norm_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ts, text="浏览...", command=lambda: ask_dir(ts_norm_var, "选择输出目录")).grid(row=2, column=2, padx=5)
 
 ttk.Label(tab_ts, text="画面字输出目录:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_ts, textvariable=ts_scr_var).grid(row=3, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ts, textvariable=ts_scr_var).grid(row=3, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ts, text="浏览...", command=lambda: ask_dir(ts_scr_var, "选择输出目录")).grid(row=3, column=2, padx=5)
 
 ttk.Label(tab_ts, text="* 智能侦测：工具会逐行扫描文件，一旦发现某行字幕的【开始时间】早于上一行的【结束时间】，\n即自动判定该行为分界点。该行及下方划为对白字幕，上方划为画面字。", foreground="gray").grid(row=4, column=0, columnspan=3, pady=(5,10), sticky="w")
@@ -3518,11 +3555,11 @@ time_op_in_var, time_op_out_var = tk.StringVar(), tk.StringVar()
 time_op_bracket_var = tk.StringVar(value="^\\[")
 
 ttk.Label(tab_time_op, text="ASS 输入文件夹:").grid(row=0, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_time_op, textvariable=time_op_in_var).grid(row=0, column=1, sticky="ew", padx=5)
+DnDEntry(tab_time_op, textvariable=time_op_in_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_time_op, text="浏览...", command=lambda: ask_dir(time_op_in_var, "选择目录")).grid(row=0, column=2, padx=5)
 
 ttk.Label(tab_time_op, text="ASS 输出文件夹:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_time_op, textvariable=time_op_out_var).grid(row=1, column=1, sticky="ew", padx=5)
+DnDEntry(tab_time_op, textvariable=time_op_out_var).grid(row=1, column=1, sticky="ew", padx=5)
 ttk.Button(tab_time_op, text="浏览...", command=lambda: ask_dir(time_op_out_var, "选择目录")).grid(row=1, column=2, padx=5)
 
 f_time_cond, time_logic_var, time_c1_var, time_bracket_var, time_c2_var, lb_time_effs, time_c3_var, lb_time_styles = build_advanced_condition_ui(tab_time_op, time_op_in_var, "第一步：画面字判定条件 (仅支持 ASS 格式)")
@@ -3645,12 +3682,12 @@ tab_zip.columnconfigure(1, weight=1)
 zip_target_var, zip_out_var, zip_max_var = tk.StringVar(), tk.StringVar(), tk.StringVar(value="50")
 
 ttk.Label(tab_zip, text="需打包的文件夹:").grid(row=0, column=0, sticky="e", padx=(0,10), pady=20)
-ttk.Entry(tab_zip, textvariable=zip_target_var).grid(row=0, column=1, sticky="ew", padx=5, pady=20)
+DnDEntry(tab_zip, textvariable=zip_target_var).grid(row=0, column=1, sticky="ew", padx=5, pady=20)
 ttk.Button(tab_zip, text="浏览...", command=lambda: ask_dir(zip_target_var, "选择")).grid(row=0, column=2, padx=(5,0), pady=20)
 ttk.Label(tab_zip, text="单包最大文件数:").grid(row=1, column=0, sticky="e", padx=(0,10), pady=10)
 ttk.Entry(tab_zip, textvariable=zip_max_var, width=15).grid(row=1, column=1, sticky="w", padx=5, pady=10)
 ttk.Label(tab_zip, text="ZIP 输出文件夹:").grid(row=2, column=0, sticky="e", padx=(0,10), pady=20)
-ttk.Entry(tab_zip, textvariable=zip_out_var).grid(row=2, column=1, sticky="ew", padx=5, pady=20)
+DnDEntry(tab_zip, textvariable=zip_out_var).grid(row=2, column=1, sticky="ew", padx=5, pady=20)
 ttk.Button(tab_zip, text="浏览...", command=lambda: ask_dir(zip_out_var, "选择")).grid(row=2, column=2, padx=(5,0), pady=20)
 ttk.Button(tab_zip, text="开始打包", command=run_zip, style='TButton').grid(row=4, column=0, columnspan=3, pady=25, ipadx=20, ipady=5)
 
@@ -3922,11 +3959,11 @@ ass_srt_var, ass_out_var = tk.StringVar(), tk.StringVar()
 ass_bracket_var = tk.StringVar(value="^\\[")
 
 ttk.Label(tab_ass, text="仅限 SRT 输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
-ttk.Entry(tab_ass, textvariable=ass_srt_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+DnDEntry(tab_ass, textvariable=ass_srt_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 ttk.Button(tab_ass, text="浏览...", command=lambda: ask_dir(ass_srt_var, "选择目录")).grid(row=0, column=2, padx=(5,0), pady=5)
 
 ttk.Label(tab_ass, text="ASS 输出文件夹:").grid(row=1, column=0, sticky="e", padx=(0,5), pady=5)
-ttk.Entry(tab_ass, textvariable=ass_out_var).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+DnDEntry(tab_ass, textvariable=ass_out_var).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 ttk.Button(tab_ass, text="浏览...", command=lambda: ask_dir(ass_out_var, "选择目录")).grid(row=1, column=2, padx=(5,0), pady=5)
 
 f_ass_txt = ttk.LabelFrame(tab_ass, text="文本处理 (画面字提取、正则替换、合并)", padding=10)
@@ -3952,7 +3989,7 @@ ass_merge_var = tk.IntVar(value=0)
 ass_merge_report_var = tk.StringVar()
 ttk.Checkbutton(f_ass_txt, text="合并相邻且相同的字幕 (时间轴无缝衔接)", variable=ass_merge_var).grid(row=3, column=0, columnspan=2, sticky="w", padx=5, pady=5)
 ttk.Label(f_ass_txt, text="合并报告导出至:").grid(row=4, column=0, sticky="e", padx=(0,5))
-ttk.Entry(f_ass_txt, textvariable=ass_merge_report_var).grid(row=4, column=1, sticky="ew", padx=5)
+DnDEntry(f_ass_txt, textvariable=ass_merge_report_var).grid(row=4, column=1, sticky="ew", padx=5)
 ttk.Button(f_ass_txt, text="浏览...", command=lambda: ask_save_file(ass_merge_report_var, "保存合并报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=4, column=2, padx=5)
 
 f_ass_style = ttk.LabelFrame(tab_ass, text="样式设置", padding=10)
@@ -4023,7 +4060,7 @@ ass_ref_path_5 = tk.StringVar()
 f_ref_top_5 = ttk.Frame(f_ass_ref_5)
 f_ref_top_5.pack(anchor="w", pady=5)
 ttk.Label(f_ref_top_5, text="外部 ASS 文件:").pack(side=tk.LEFT)
-ttk.Entry(f_ref_top_5, textvariable=ass_ref_path_5, width=30).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_ref_top_5, textvariable=ass_ref_path_5, width=30).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_ref_top_5, text="浏览...", command=lambda: ask_file(ass_ref_path_5, "选择ASS", [("ASS","*.ass")])).pack(side=tk.LEFT)
 
 f_ref_mid_5 = ttk.Frame(f_ass_ref_5)
@@ -4061,32 +4098,33 @@ update_ass_style_mode_5()
 
 # ================= TAB 9: SRT 分类合并转 ASS =================
 tab_ms = ttk.Frame(nb_ass, padding=10)
-nb_ass.add(tab_ms, text=" SRT合并/转ASS ")
 tab_ms.columnconfigure(1, weight=1)
+nb_ass.add(tab_ms, text=" SRT合并/转ASS ")
 
 ms_norm_var, ms_scr_var, ms_out_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
 
 ttk.Label(tab_ms, text="对白字幕 SRT 文件夹:").grid(row=0, column=0, sticky="e", pady=5, padx=5)
-ttk.Entry(tab_ms, textvariable=ms_norm_var).grid(row=0, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ms, textvariable=ms_norm_var).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ms, text="浏览...", command=lambda: ask_dir(ms_norm_var, "选择对白字幕目录")).grid(row=0, column=2, padx=5)
 
 ttk.Label(tab_ms, text="画面字 SRT 文件夹:").grid(row=1, column=0, sticky="e", pady=5, padx=5)
-ttk.Entry(tab_ms, textvariable=ms_scr_var).grid(row=1, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ms, textvariable=ms_scr_var).grid(row=1, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ms, text="浏览...", command=lambda: ask_dir(ms_scr_var, "选择画面字目录")).grid(row=1, column=2, padx=5)
 
 ttk.Label(tab_ms, text="合成 ASS 输出文件夹:").grid(row=2, column=0, sticky="e", pady=5, padx=5)
-ttk.Entry(tab_ms, textvariable=ms_out_var).grid(row=2, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ms, textvariable=ms_out_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ms, text="浏览...", command=lambda: ask_dir(ms_out_var, "选择输出目录")).grid(row=2, column=2, padx=5)
 
 # --- 新增：文本正则替换面板 ---
 f_ms_txt = ttk.LabelFrame(tab_ms, text="文本处理 (合并前对源字幕文件进行正则替换，不影响源文件)", padding=10)
 f_ms_txt.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(10, 5), padx=5)
+f_ms_txt.columnconfigure(1, weight=1)
 
 ms_enable_regex_var = tk.IntVar(value=0)
 ttk.Checkbutton(f_ms_txt, text="开启正则替换", variable=ms_enable_regex_var).grid(row=0, column=0, sticky="w", padx=5)
 
 f_ms_txt_sub = ttk.Frame(f_ms_txt)
-f_ms_txt_sub.grid(row=0, column=1, sticky="w", padx=10)
+f_ms_txt_sub.grid(row=0, column=1, sticky="ew", padx=10)
 ttk.Label(f_ms_txt_sub, text="应用到:").pack(side=tk.LEFT)
 ms_regex_target_var = tk.StringVar(value="画面字")
 ttk.Combobox(f_ms_txt_sub, textvariable=ms_regex_target_var, values=["画面字", "对白字幕", "全部"], width=10).pack(side=tk.LEFT, padx=5)
@@ -4159,7 +4197,7 @@ ms_ref_path_9 = tk.StringVar()
 f_ref_top_9 = ttk.Frame(f_ms_ref_9)
 f_ref_top_9.pack(anchor="w", pady=5)
 ttk.Label(f_ref_top_9, text="外部 ASS 文件:").pack(side=tk.LEFT)
-ttk.Entry(f_ref_top_9, textvariable=ms_ref_path_9, width=30).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_ref_top_9, textvariable=ms_ref_path_9, width=30).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_ref_top_9, text="浏览...", command=lambda: ask_file(ms_ref_path_9, "选择ASS", [("ASS","*.ass")])).pack(side=tk.LEFT)
 
 f_ref_mid_9 = ttk.Frame(f_ms_ref_9)
@@ -4214,15 +4252,15 @@ am_out_var = tk.StringVar()
 ttk.Label(tab_am, text="说明: 此功能会将 文件夹2 的字幕行 置于 文件夹1 的字幕行顶部，并自动合并去重样式头。", foreground="gray").grid(row=0, column=0, columnspan=3, pady=(0, 15), sticky="w")
 
 ttk.Label(tab_am, text="文件夹1 (主文件/在下):").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_am, textvariable=am_dir1_var).grid(row=1, column=1, sticky="ew", padx=5)
+DnDEntry(tab_am, textvariable=am_dir1_var).grid(row=1, column=1, sticky="ew", padx=5)
 ttk.Button(tab_am, text="浏览...", command=lambda: ask_dir(am_dir1_var, "选择文件夹1")).grid(row=1, column=2, padx=5)
 
 ttk.Label(tab_am, text="文件夹2 (要拼接顶部的):").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_am, textvariable=am_dir2_var).grid(row=2, column=1, sticky="ew", padx=5)
+DnDEntry(tab_am, textvariable=am_dir2_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_am, text="浏览...", command=lambda: ask_dir(am_dir2_var, "选择文件夹2")).grid(row=2, column=2, padx=5)
 
 ttk.Label(tab_am, text="合并后输出文件夹:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_am, textvariable=am_out_var).grid(row=3, column=1, sticky="ew", padx=5)
+DnDEntry(tab_am, textvariable=am_out_var).grid(row=3, column=1, sticky="ew", padx=5)
 ttk.Button(tab_am, text="浏览...", command=lambda: ask_dir(am_out_var, "选择输出文件夹")).grid(row=3, column=2, padx=5)
 
 ttk.Button(tab_am, text="开始合并 ASS", command=run_ass_merge, style='TButton').grid(row=4, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
@@ -4234,7 +4272,7 @@ edit_in_var.trace_add("write", clear_memory_on_dir_change)
 # ==============================================================
 
 ttk.Label(tab_edit, text="字幕输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
-ttk.Entry(tab_edit, textvariable=edit_in_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+DnDEntry(tab_edit, textvariable=edit_in_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
 # === 第 0 行：输入文件夹的浏览按钮 + 暂存按钮 ===
 f_edit_in_btns = ttk.Frame(tab_edit)
 f_edit_in_btns.grid(row=0, column=2, sticky="w", padx=(5,0), pady=5)
@@ -4242,7 +4280,7 @@ ttk.Button(f_edit_in_btns, text="浏览...", command=lambda: ask_dir(edit_in_var
 ttk.Button(f_edit_in_btns, text="💾 暂存到内存", command=lambda: execute_ass_editor(stage_only=True)).pack(side=tk.LEFT, padx=(10, 0))
 
 ttk.Label(tab_edit, text="修改后字幕输出:").grid(row=1, column=0, sticky="e", padx=(0,5), pady=5)
-ttk.Entry(tab_edit, textvariable=edit_out_var).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
+DnDEntry(tab_edit, textvariable=edit_out_var).grid(row=1, column=1, sticky="ew", padx=5, pady=5)
 
 # === 第 1 行：输出文件夹的浏览按钮 + 执行按钮 ===
 f_edit_out_btns = ttk.Frame(tab_edit)
@@ -4391,7 +4429,7 @@ m0_ref_path, m0_ref_style = tk.StringVar(), tk.StringVar()
 f_m0_rtop = ttk.Frame(f_m0_ref)
 f_m0_rtop.pack(anchor="w", pady=5)
 ttk.Label(f_m0_rtop, text="外部 ASS 文件:").pack(side=tk.LEFT)
-ttk.Entry(f_m0_rtop, textvariable=m0_ref_path, width=30).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_m0_rtop, textvariable=m0_ref_path, width=30).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_m0_rtop, text="浏览...", command=lambda: ask_file(m0_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
 
 m0_ref_cb = ttk.Combobox(f_m0_rtop, textvariable=m0_ref_style, width=15)
@@ -4477,7 +4515,7 @@ m2_ref_path, m2_ref_n, m2_ref_s = tk.StringVar(), tk.StringVar(), tk.StringVar()
 f_m2_top = ttk.Frame(f_m2_ref)
 f_m2_top.pack(anchor="w", pady=5)
 ttk.Label(f_m2_top, text="提供样式的外部 ASS 文件:").pack(side=tk.LEFT)
-ttk.Entry(f_m2_top, textvariable=m2_ref_path, width=30).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_m2_top, textvariable=m2_ref_path, width=30).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_m2_top, text="浏览...", command=lambda: ask_file(m2_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
 
 f_m2_mid = ttk.Frame(f_m2_ref)
@@ -4517,7 +4555,7 @@ etab_sync.columnconfigure(1, weight=1)
 
 m3_ref_dir = tk.StringVar()
 ttk.Label(etab_sync, text="提供样式/特效的参考文件夹:").grid(row=0, column=0, sticky="e", pady=5)
-ttk.Entry(etab_sync, textvariable=m3_ref_dir).grid(row=0, column=1, sticky="ew", padx=5)
+DnDEntry(etab_sync, textvariable=m3_ref_dir).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(etab_sync, text="浏览...", command=lambda: ask_dir(m3_ref_dir, "选择参考目录")).grid(row=0, column=2)
 
 m3_sync_type = tk.IntVar(value=0)
@@ -4530,11 +4568,12 @@ m3_keep_font_cb.grid(row=2, column=0, columnspan=3, sticky="w", padx=20)
 
 m3_err_rep = tk.StringVar()
 ttk.Label(etab_sync, text="时间轴不匹配报错报告保存至:").grid(row=3, column=0, sticky="e", pady=10)
-ttk.Entry(etab_sync, textvariable=m3_err_rep).grid(row=3, column=1, sticky="ew", padx=5)
+DnDEntry(etab_sync, textvariable=m3_err_rep).grid(row=3, column=1, sticky="ew", padx=5)
 ttk.Button(etab_sync, text="浏览...", command=lambda: ask_save_file(m3_err_rep, "保存", [("Excel", "*.xlsx")], ".xlsx")).grid(row=3, column=2)
 
 # ------ 功能3: 批量/条件定位正则替换 (合并原功能5和6) ------
 etab_f4 = ttk.Frame(edit_nb, padding=10)
+etab_f4.columnconfigure(1, weight=1)
 edit_nb.add(etab_f4, text="批量/条件正则")
 
 f4_format_var = tk.StringVar(value="ASS")
@@ -4575,7 +4614,7 @@ ttk.Radiobutton(f_punct, text="全转半(补空格)", variable=f4_punct_mode, va
 
 ttk.Label(etab_f4, text="正则替换规则:").grid(row=2, column=0, sticky="ne", pady=5)
 f4_regex_text = tk.Text(etab_f4, height=3, width=45, font=('Arial', 9))
-f4_regex_text.grid(row=2, column=1, columnspan=3, sticky="w", padx=5, pady=5)
+f4_regex_text.grid(row=2, column=1, columnspan=3, sticky="ew", padx=5, pady=5)
 f4_regex_text.insert(tk.END, r"""1. 查找指定数量的特定字符，此处为{2}，查找\\N或者\n: ^(?:.*(?:\\N|\n)){2}[\s\S]*$
 2. []替换为()并加上换行: \[([^\]]*)\] >>> ($1)\\N
 3. 只替换首尾的[]为()：^\[([\s\S]*)\]$ >>> ($1)""")
@@ -5003,7 +5042,7 @@ f7_top_2.pack(fill=tk.X, pady=(2, 0))
 
 m7_video_dir = tk.StringVar()
 ttk.Label(f7_top_2, text="参考视频夹(可选):").pack(side=tk.LEFT, padx=(5, 2))
-ttk.Entry(f7_top_2, textvariable=m7_video_dir, width=15).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+DnDEntry(f7_top_2, textvariable=m7_video_dir, width=15).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
 ttk.Button(f7_top_2, text="浏览...", command=lambda: ask_dir(m7_video_dir, "选择视频")).pack(side=tk.LEFT, padx=2)
 ttk.Button(f7_top_2, text="🎬 视频实时预览调参", command=open_video_preview).pack(side=tk.LEFT, padx=5)
 # ==============================================================
@@ -5064,7 +5103,7 @@ f_m7_ref = ttk.Frame(f7_bot)
 m7_ref_path, m7_ref_style = tk.StringVar(), tk.StringVar()
 f_m7_top = ttk.Frame(f_m7_ref); f_m7_top.pack(anchor="w", pady=5)
 ttk.Label(f_m7_top, text="外部 ASS:").pack(side=tk.LEFT)
-ttk.Entry(f_m7_top, textvariable=m7_ref_path, width=25).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_m7_top, textvariable=m7_ref_path, width=25).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_m7_top, text="浏览...", command=lambda: ask_file(m7_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
 m7_ref_cb = ttk.Combobox(f_m7_top, textvariable=m7_ref_style, width=15)
 ttk.Button(f_m7_top, text="扫描样式 ->", command=lambda: scan_ref_for_cb(m7_ref_path.get(), m7_ref_cb, m7_ref_style)).pack(side=tk.LEFT, padx=5)
@@ -5132,7 +5171,7 @@ f_m8_ref = ttk.Frame(f8_bot)
 m8_ref_path, m8_ref_style = tk.StringVar(), tk.StringVar()
 f_m8_top = ttk.Frame(f_m8_ref); f_m8_top.pack(anchor="w", pady=5)
 ttk.Label(f_m8_top, text="外部 ASS:").pack(side=tk.LEFT)
-ttk.Entry(f_m8_top, textvariable=m8_ref_path, width=30).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_m8_top, textvariable=m8_ref_path, width=30).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_m8_top, text="浏览...", command=lambda: ask_file(m8_ref_path, "选择", [("ASS","*.ass")])).pack(side=tk.LEFT, padx=5)
 m8_ref_cb = ttk.Combobox(f_m8_top, textvariable=m8_ref_style, width=15)
 ttk.Button(f_m8_top, text="扫描样式 ->", command=lambda: scan_ref_for_cb(m8_ref_path.get(), m8_ref_cb, m8_ref_style)).pack(side=tk.LEFT, padx=5)
@@ -5890,19 +5929,19 @@ eff_src_var, eff_tgt_var = tk.StringVar(), tk.StringVar()
 eff_out_var, eff_err_var = tk.StringVar(), tk.StringVar()
 
 ttk.Label(tab_eff, text="提供数据的源文件夹:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_src_var).grid(row=2, column=1, sticky="ew", padx=5)
+DnDEntry(tab_eff, textvariable=eff_src_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_src_var, "选择源文件夹")).grid(row=2, column=2, padx=5)
 
 ttk.Label(tab_eff, text="待接收数据的目标文件夹:").grid(row=3, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_tgt_var).grid(row=3, column=1, sticky="ew", padx=5)
+DnDEntry(tab_eff, textvariable=eff_tgt_var).grid(row=3, column=1, sticky="ew", padx=5)
 ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_tgt_var, "选择目标文件夹")).grid(row=3, column=2, padx=5)
 
 ttk.Label(tab_eff, text="合成后的新文件输出至:").grid(row=4, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_out_var).grid(row=4, column=1, sticky="ew", padx=5)
+DnDEntry(tab_eff, textvariable=eff_out_var).grid(row=4, column=1, sticky="ew", padx=5)
 ttk.Button(tab_eff, text="浏览...", command=lambda: ask_dir(eff_out_var, "选择输出文件夹")).grid(row=4, column=2, padx=5)
 
 ttk.Label(tab_eff, text="报告保存至:").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
-ttk.Entry(tab_eff, textvariable=eff_err_var).grid(row=5, column=1, sticky="ew", padx=5)
+DnDEntry(tab_eff, textvariable=eff_err_var).grid(row=5, column=1, sticky="ew", padx=5)
 ttk.Button(tab_eff, text="浏览...", command=lambda: ask_save_file(eff_err_var, "保存报错报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=5, column=2, padx=5)
 
 ttk.Label(tab_eff, text="* 注：将基于【文件同名】提取。指定列模式按行数复用，文件头模式按区块名复用\n如果复用时间轴，时间轴报错请忽略，按行数复用", foreground="gray").grid(row=6, column=0, columnspan=3, pady=(0,10))
@@ -5919,17 +5958,17 @@ split_ass_in_var = tk.StringVar()
 split_ass_out_scr_var, split_ass_out_norm_var = tk.StringVar(), tk.StringVar()
 
 ttk.Label(tab_ass_split, text="ASS 输入文件夹:").grid(row=0, column=0, sticky="e", pady=5, padx=5)
-ttk.Entry(tab_ass_split, textvariable=split_ass_in_var).grid(row=0, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ass_split, textvariable=split_ass_in_var).grid(row=0, column=1, sticky="ew", padx=5)
 f_split_in_btns = ttk.Frame(tab_ass_split)
 f_split_in_btns.grid(row=0, column=2, sticky="w", padx=5)
 ttk.Button(f_split_in_btns, text="浏览...", command=lambda: ask_dir(split_ass_in_var, "选择目录")).pack(side=tk.LEFT)
 
 ttk.Label(tab_ass_split, text="画面字 ASS 存至:").grid(row=1, column=0, sticky="e", pady=5, padx=5)
-ttk.Entry(tab_ass_split, textvariable=split_ass_out_scr_var).grid(row=1, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ass_split, textvariable=split_ass_out_scr_var).grid(row=1, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ass_split, text="浏览...", command=lambda: ask_dir(split_ass_out_scr_var, "选择目录")).grid(row=1, column=2, sticky="w", padx=5)
 
 ttk.Label(tab_ass_split, text="普通字 ASS 存至:").grid(row=2, column=0, sticky="e", pady=5, padx=5)
-ttk.Entry(tab_ass_split, textvariable=split_ass_out_norm_var).grid(row=2, column=1, sticky="ew", padx=5)
+DnDEntry(tab_ass_split, textvariable=split_ass_out_norm_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ass_split, text="浏览...", command=lambda: ask_dir(split_ass_out_norm_var, "选择目录")).grid(row=2, column=2, sticky="w", padx=5)
 
 # 完美复用高级判定组件
@@ -5946,6 +5985,7 @@ ttk.Button(tab_ass_split, text="▶ 开始拆分 ASS", command=run_ass_split, st
 # ================= TAB 11: ASS 样式预设提取 =================
 tab_ext = ttk.Frame(nb_ass, padding=20)
 nb_ass.add(tab_ext, text=" ASS 样式预设提取 ")
+tab_ext.columnconfigure(1, weight=1)
 
 ext_file_var = tk.StringVar()
 ext_style_var = tk.StringVar()
@@ -5954,17 +5994,17 @@ ext_styles_cache = {}
 ext_res_cache = {"x": "1080", "y": "1920"}
 
 ttk.Label(tab_ext, text="选择用于提取的 ASS 文件:").grid(row=0, column=0, sticky="e", pady=10)
-ttk.Entry(tab_ext, textvariable=ext_file_var, width=40).grid(row=0, column=1, sticky="w", padx=5)
+DnDEntry(tab_ext, textvariable=ext_file_var, width=40).grid(row=0, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ext, text="浏览...", command=lambda: ask_file(ext_file_var, "选择ASS", [("ASS","*.ass")])).grid(row=0, column=2, padx=5)
 
 ttk.Button(tab_ext, text="🔍 扫描样式", command=run_scan_ext).grid(row=0, column=3, padx=5)
 
 ttk.Label(tab_ext, text="选择要提取的样式:").grid(row=1, column=0, sticky="e", pady=10)
 cb_ext_style = ttk.Combobox(tab_ext, textvariable=ext_style_var, state="readonly", width=30)
-cb_ext_style.grid(row=1, column=1, sticky="w", padx=5)
+cb_ext_style.grid(row=1, column=1, sticky="ew", padx=5)
 
 ttk.Label(tab_ext, text="保存为预设名称:").grid(row=2, column=0, sticky="e", pady=10)
-ttk.Entry(tab_ext, textvariable=ext_preset_name, width=30).grid(row=2, column=1, sticky="w", padx=5)
+ttk.Entry(tab_ext, textvariable=ext_preset_name, width=30).grid(row=2, column=1, sticky="ew", padx=5)
 
 def parse_ass_color(ass_str):
     """解析 ASS 颜色代码，返回 (HEX颜色, HEX透明度)"""
@@ -6419,17 +6459,17 @@ f_tc_inputs.columnconfigure(1, weight=1) # 让中间的输入框自动拉伸填�
 
 # 第一行：源语言文件夹
 ttk.Label(f_tc_inputs, text="1. 源语言字幕文件夹:").grid(row=0, column=0, sticky="e", pady=5)
-ttk.Entry(f_tc_inputs, textvariable=tc_src_dir).grid(row=0, column=1, sticky="ew", padx=10, pady=5)
+DnDEntry(f_tc_inputs, textvariable=tc_src_dir).grid(row=0, column=1, sticky="ew", padx=10, pady=5)
 ttk.Button(f_tc_inputs, text="浏览...", command=lambda: ask_dir(tc_src_dir, "选择源语言字幕文件夹")).grid(row=0, column=2, padx=5, pady=5)
 
 # 第二行：目标语言文件夹
 ttk.Label(f_tc_inputs, text="2. 目标语言字幕文件夹:").grid(row=1, column=0, sticky="e", pady=5)
-ttk.Entry(f_tc_inputs, textvariable=tc_tgt_dir).grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+DnDEntry(f_tc_inputs, textvariable=tc_tgt_dir).grid(row=1, column=1, sticky="ew", padx=10, pady=5)
 ttk.Button(f_tc_inputs, text="浏览...", command=lambda: ask_dir(tc_tgt_dir, "选择目标语言字幕文件夹")).grid(row=1, column=2, padx=5, pady=5)
 
 # 第三行：术语表文件
 ttk.Label(f_tc_inputs, text="3. 术语表文件 (Excel/CSV):").grid(row=2, column=0, sticky="e", pady=5)
-ttk.Entry(f_tc_inputs, textvariable=tc_tb_path).grid(row=2, column=1, sticky="ew", padx=10, pady=5)
+DnDEntry(f_tc_inputs, textvariable=tc_tb_path).grid(row=2, column=1, sticky="ew", padx=10, pady=5)
 ttk.Button(f_tc_inputs, text="浏览...", command=lambda: tc_tb_path.set(filedialog.askopenfilename(filetypes=[("Excel/CSV", "*.xlsx *.csv")]))).grid(row=2, column=2, padx=5, pady=5)
 
 # 第四行：读取列名设置
@@ -6486,7 +6526,7 @@ lb_tc_cats.config(yscrollcommand=sb_tc_cats.set)
 f_tc_5 = ttk.Frame(tab_term_check)
 f_tc_5.pack(fill=tk.X, pady=15)
 ttk.Label(f_tc_5, text="4. 检查报告输出至 (Excel):").pack(side=tk.LEFT)
-ttk.Entry(f_tc_5, textvariable=tc_out_path, width=60).pack(side=tk.LEFT, padx=5)
+DnDEntry(f_tc_5, textvariable=tc_out_path, width=60).pack(side=tk.LEFT, padx=5)
 ttk.Button(f_tc_5, text="浏览", command=lambda: ask_save_file(tc_out_path, "保存术语检查报告", [("Excel", "*.xlsx")], ".xlsx")).pack(side=tk.LEFT)
 
 ttk.Button(tab_tc:=ttk.Frame(tab_term_check), text="🚀 开始执行批量术语检查", command=run_term_check, style='TButton').pack(pady=10, ipadx=30, ipady=5)
@@ -6504,11 +6544,11 @@ tab_xlsx_merge.columnconfigure(1, weight=1)
 
 # --- 全新独立标签页的 UI 布局 (间距更宽敞、更美观) ---
 ttk.Label(tab_xlsx_merge, text="1. 包含待合并 XLSX 文件的输入文件夹:").grid(row=0, column=0, sticky="e", pady=20)
-ttk.Entry(tab_xlsx_merge, textvariable=ext_merge_in_var, width=50).grid(row=0, column=1, sticky="ew", padx=15, pady=20)
+DnDEntry(tab_xlsx_merge, textvariable=ext_merge_in_var, width=50).grid(row=0, column=1, sticky="ew", padx=15, pady=20)
 ttk.Button(tab_xlsx_merge, text="浏览...", command=lambda: ask_dir(ext_merge_in_var, "选择需要合并的XLSX文件夹")).grid(row=0, column=2, padx=5, pady=20)
 
 ttk.Label(tab_xlsx_merge, text="2. 合并后的新文件保存至 (Excel):").grid(row=1, column=0, sticky="e", pady=20)
-ttk.Entry(tab_xlsx_merge, textvariable=ext_merge_out_var, width=50).grid(row=1, column=1, sticky="ew", padx=15, pady=20)
+DnDEntry(tab_xlsx_merge, textvariable=ext_merge_out_var, width=50).grid(row=1, column=1, sticky="ew", padx=15, pady=20)
 ttk.Button(tab_xlsx_merge, text="浏览...", command=lambda: ask_save_file(ext_merge_out_var, "保存合并后的文件", [("Excel", "*.xlsx")], ".xlsx")).grid(row=1, column=2, padx=5, pady=20)
 
 ttk.Button(tab_xlsx_merge, text="⚡ 开始执行批量合并", command=run_xlsx_merge, style='TButton').grid(row=2, column=0, columnspan=3, pady=40, ipadx=30, ipady=10)
@@ -7078,20 +7118,20 @@ f_dub.pack(fill=tk.X, pady=10)
 f_dub.columnconfigure(1, weight=1)
 
 ttk.Label(f_dub, text="配音信息表 文件夹:").grid(row=0, column=0, sticky="e", pady=5)
-ttk.Entry(f_dub, textvariable=dub_info_dir).grid(row=0, column=1, sticky="ew", padx=10)
+DnDEntry(f_dub, textvariable=dub_info_dir).grid(row=0, column=1, sticky="ew", padx=10)
 ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_info_dir, "选择配音信息表文件夹")).grid(row=0, column=2, padx=5)
 
 ttk.Label(f_dub, text="配音角色表 文件夹:").grid(row=1, column=0, sticky="e", pady=5)
-ttk.Entry(f_dub, textvariable=dub_char_dir).grid(row=1, column=1, sticky="ew", padx=10)
+DnDEntry(f_dub, textvariable=dub_char_dir).grid(row=1, column=1, sticky="ew", padx=10)
 ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_char_dir, "选择配音角色表文件夹")).grid(row=1, column=2, padx=5)
 
 # === 新增：选择模板文件 ===
 ttk.Label(f_dub, text="严格对齐排版的 模板文件:").grid(row=2, column=0, sticky="e", pady=5)
-ttk.Entry(f_dub, textvariable=dub_tpl_file).grid(row=2, column=1, sticky="ew", padx=10)
+DnDEntry(f_dub, textvariable=dub_tpl_file).grid(row=2, column=1, sticky="ew", padx=10)
 ttk.Button(f_dub, text="浏览...", command=lambda: dub_tpl_file.set(filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")]))).grid(row=2, column=2, padx=5)
 
 ttk.Label(f_dub, text="最终生成的物料表 输出至:").grid(row=3, column=0, sticky="e", pady=5)
-ttk.Entry(f_dub, textvariable=dub_out_dir).grid(row=3, column=1, sticky="ew", padx=10)
+DnDEntry(f_dub, textvariable=dub_out_dir).grid(row=3, column=1, sticky="ew", padx=10)
 ttk.Button(f_dub, text="浏览...", command=lambda: ask_dir(dub_out_dir, "选择输出文件夹")).grid(row=3, column=2, padx=5)
 
 # === 新增：自定义配音要求 ===
@@ -7111,11 +7151,11 @@ f_trans.pack(fill=tk.X, pady=10)
 f_trans.columnconfigure(1, weight=1)
 
 ttk.Label(f_trans, text="需翻译的原始文件 (Excel):").grid(row=0, column=0, sticky="e", pady=5)
-ttk.Entry(f_trans, textvariable=trans_in_file).grid(row=0, column=1, sticky="ew", padx=10)
+DnDEntry(f_trans, textvariable=trans_in_file).grid(row=0, column=1, sticky="ew", padx=10)
 ttk.Button(f_trans, text="浏览...", command=lambda: trans_in_file.set(filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx")]))).grid(row=0, column=2, padx=5)
 
 ttk.Label(f_trans, text="翻译后另存为 (Excel):").grid(row=1, column=0, sticky="e", pady=5)
-ttk.Entry(f_trans, textvariable=trans_out_file).grid(row=1, column=1, sticky="ew", padx=10)
+DnDEntry(f_trans, textvariable=trans_out_file).grid(row=1, column=1, sticky="ew", padx=10)
 ttk.Button(f_trans, text="浏览...", command=lambda: ask_save_file(trans_out_file, "保存翻译后文件", [("Excel", "*.xlsx")], ".xlsx")).grid(row=1, column=2, padx=5)
 
 # --- 新增：翻译服务引擎选择 ---

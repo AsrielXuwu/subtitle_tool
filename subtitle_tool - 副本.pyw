@@ -10,7 +10,6 @@ import json
 import zipfile
 import math
 import platform
-import translators as ts
 import openpyxl
 from openpyxl.cell.rich_text import TextBlock, CellRichText
 from openpyxl.cell.text import InlineFont
@@ -99,7 +98,6 @@ NO_SPACE_LANGS = {
     "Chinese (Simplified)", "Chinese (Traditional, Taiwan)", "Chinese (Traditional, Hong Kong)", 
     "Japanese (日本語)", "Thai (ไทย)"
 }
-
 
 class LQA_App:
     def browse_tb_file(self):
@@ -377,43 +375,92 @@ class LQA_App:
         self.sheet_listbox.config(yscrollcommand=sheet_scrollbar.set)
 
         # --- 4. 集数过滤区 ---
-        frame_eps = ttk.LabelFrame(self.scrollable_frame, text="4. 集数过滤 (支持 Ctrl 多选；不选默认检查全部)", padding=10)
-        frame_eps.pack(fill="x", padx=10, pady=5)
+        frame_ep = ttk.LabelFrame(self.scrollable_frame, text="4. 集数过滤 (可选)", padding=10)
+        frame_ep.pack(fill="x", padx=10, pady=5)
         
-        self.btn_load_eps = ttk.Button(frame_eps, text="🔍 扫描集数", command=self.load_episodes)
-        self.btn_load_eps.pack(side="left", padx=5)
+        # 【修复：恢复被误删的扫描集数按钮】
+        btn_frame = ttk.Frame(frame_ep)
+        btn_frame.pack(fill="x", pady=(0, 5))
+        self.btn_load_eps = ttk.Button(btn_frame, text="扫描工作表与集数", command=self.load_episodes)
+        self.btn_load_eps.pack(side=tk.LEFT)
 
-        self.ep_listbox = tk.Listbox(frame_eps, selectmode=tk.MULTIPLE, height=4, exportselection=False)
-        self.ep_listbox.pack(side="left", fill="both", expand=True, padx=5)
+        # 【新增：手动输入集数】
+        ttk.Label(frame_ep, text="手动输入集数 (多集以半角逗号分隔, 如 23_0001,25_0003):").pack(anchor="w", pady=(0, 2))
+        self.manual_ep_var = tk.StringVar()
+        self.manual_ep_entry = ttk.Entry(frame_ep, textvariable=self.manual_ep_var, width=60)
+        self.manual_ep_entry.pack(fill="x", pady=(0, 5))
 
-        scrollbar = ttk.Scrollbar(frame_eps, orient="vertical", command=self.ep_listbox.yview)
-        scrollbar.pack(side="left", fill="y")
-        self.ep_listbox.config(yscrollcommand=scrollbar.set)
+        ttk.Label(frame_ep, text="或从下方列表中选择 (与手动输入互斥):").pack(anchor="w")
+        
+        ep_list_frame = ttk.Frame(frame_ep)
+        ep_list_frame.pack(fill="both", expand=True)
+        self.ep_listbox = tk.Listbox(ep_list_frame, selectmode=tk.MULTIPLE, height=5, exportselection=False)
+        self.ep_listbox.pack(side=tk.LEFT, fill="both", expand=True)
+        ep_scrollbar = ttk.Scrollbar(ep_list_frame, orient="vertical", command=self.ep_listbox.yview)
+        ep_scrollbar.pack(side=tk.RIGHT, fill="y")
+        self.ep_listbox.config(yscrollcommand=ep_scrollbar.set)
+        
+        # 【输入与列表互斥的事件绑定】
+        def on_manual_ep_change(*args):
+            if self.manual_ep_var.get().strip():
+                self.ep_listbox.selection_clear(0, tk.END)
+                self.ep_listbox.config(state="disabled")
+            else:
+                self.ep_listbox.config(state="normal")
+                
+        self.manual_ep_var.trace_add("write", on_manual_ep_change)
+        
+        def on_listbox_select(event):
+            if self.ep_listbox.curselection():
+                self.manual_ep_var.set("")
+                
+        self.ep_listbox.bind("<<ListboxSelect>>", on_listbox_select)
 
         # --- 5. AI 参数配置区 ---
         frame_ai = ttk.LabelFrame(self.scrollable_frame, text="5. AI 引擎及要求设置", padding=10)
         frame_ai.pack(fill="x", padx=10, pady=5)
-        frame_ai.columnconfigure(1, weight=1)
+        frame_ai.columnconfigure(3, weight=1)
         
-        ttk.Label(frame_ai, text="选择模型:").grid(row=0, column=0, sticky="w")
+        # Row 0: 任务模式 & 系统角色 (新增)
+        ttk.Label(frame_ai, text="任务模式:").grid(row=0, column=0, sticky="w", pady=5)
+        self.task_mode_box = ttk.Combobox(frame_ai, values=["拼写检查 (LQA)", "纯翻译 (Translation)"], width=20, state="readonly")
+        self.task_mode_box.current(0)
+        self.task_mode_box.grid(row=0, column=1, padx=5, sticky="w", pady=5)
+        
+        ttk.Label(frame_ai, text="系统角色(支持手填):").grid(row=0, column=2, sticky="w", padx=(10,0), pady=5)
+        roles = [
+            "You are an expert in subtitle localization and Language Quality Assurance (LQA).",
+            "You are a professional native translator with extensive experience in subtitle translation.",
+            "You are a creative subtitle translator, skilled at adapting slang, idioms, and cultural nuances.",
+            "You are a technical document translator, focusing on precision, strict terminology, and consistency.",
+            "You are a colloquial dialogue translator, making translations sound natural, spoken, and character-driven."
+        ]
+        self.role_box = ttk.Combobox(frame_ai, values=roles, width=50)
+        self.role_box.current(0)
+        self.role_box.grid(row=0, column=3, padx=5, sticky="we", pady=5)
+
+        # Row 1: 模型 & 目标语言
+        ttk.Label(frame_ai, text="选择模型:").grid(row=1, column=0, sticky="w")
         self.model_box = ttk.Combobox(frame_ai, values=list(ENGINES_MAP.keys()), width=20)
         self.model_box.current(0)
-        self.model_box.grid(row=0, column=1, padx=5, sticky="w")
+        self.model_box.grid(row=1, column=1, padx=5, sticky="w")
 
-        ttk.Label(frame_ai, text="目标语言(支持手填):").grid(row=0, column=2, sticky="w", padx=(10,0))
+        ttk.Label(frame_ai, text="目标语言(支持手填):").grid(row=1, column=2, sticky="w", padx=(10,0))
         self.lang_box = ttk.Combobox(frame_ai, values=list(LANGUAGES_MAP.keys()), width=25)
         self.lang_box.set("English (United States)")
-        self.lang_box.grid(row=0, column=3, padx=5, sticky="w")
+        self.lang_box.grid(row=1, column=3, padx=5, sticky="w")
 
-        ttk.Label(frame_ai, text="Token 上限/次:").grid(row=1, column=0, sticky="w", pady=5)
+        # Row 2: Token 上限
+        ttk.Label(frame_ai, text="Token 上限/次:").grid(row=2, column=0, sticky="w", pady=5)
         self.token_limit = ttk.Entry(frame_ai, width=10)
         self.token_limit.insert(0, "2000")
-        self.token_limit.grid(row=1, column=1, padx=5, sticky="w", pady=5)
+        self.token_limit.grid(row=2, column=1, padx=5, sticky="w", pady=5)
 
-        ttk.Label(frame_ai, text="要求/背景:").grid(row=2, column=0, sticky="nw", pady=5)
+        # Row 3: 额外背景
+        ttk.Label(frame_ai, text="要求/背景:").grid(row=3, column=0, sticky="nw", pady=5)
         self.context_text = tk.Text(frame_ai, width=65, height=3)
-        self.context_text.insert("1.0", "这通常是短剧的字幕文件，为xxx背景。请确保称呼和语气符合设定（同时参考原文/译文），修改错别字、不地道的表达、拼写错误和语法错误，避免直译保证口语化，使其符合本地化要求，保留原始译文使用的人名、地名、专有名词和数字、货币格式（以及术语）。")
-        self.context_text.grid(row=2, column=1, columnspan=3, padx=5, pady=5, sticky="we")
+        self.context_text.insert("1.0", "这通常是短剧的字幕文件，xxx背景。请确保称呼和语气符合设定，按要求检查并修改，使其符合本地化要求，需要保留原始译文使用的人名和地名，数字、货币格式，专有名词（以及术语）。")
+        self.context_text.grid(row=3, column=1, columnspan=3, padx=5, pady=5, sticky="we")
 
         # --- 新增：6. 术语表约束配置 (可选) ---
         frame_tb = ttk.LabelFrame(self.scrollable_frame, text="6. 术语表约束配置 (向AI发送术语表，防止错误修改)", padding=10)
@@ -640,51 +687,64 @@ class LQA_App:
         except ImportError:
             return int(len(str(text)) * 1.5)
 
-    def build_prompt(self, target_lang_name, target_lang_code, additional_context, with_src, glossary_str=""):
+    def build_prompt(self, target_lang_name, target_lang_code, additional_context, with_src, task_mode, system_role):
         if target_lang_code in NO_SPACE_LANGS:
             concat_rule = f"Since {target_lang_name} does not use spaces between words, if a sentence spans across multiple lines (IDs), treat them as directly connected without any spaces when evaluating context and grammar."
         else:
             concat_rule = f"Since {target_lang_name} uses spaces between words, if a sentence spans across multiple lines (IDs), treat them as connected with a space when evaluating context and grammar."
 
-        # === 动态注入术语表约束指令 ===
-        tb_prompt = ""
-        if glossary_str:
-            tb_prompt = f"\n# Mandatory Glossary (STRICTLY enforce these terms in translation):\n{glossary_str}"
-
-        if with_src:
+        if "翻译" in task_mode or "Translation" in task_mode:
             sys_prompt = f"""# System Role:
-You are an expert in subtitle localization and Language Quality Assurance (LQA).
+{system_role}
 # Context:
 - Target Language: {target_lang_name} ({target_lang_code})
 - Continues Rule: {concat_rule}
-- Reqs: {additional_context}{tb_prompt}
+- Reqs: {additional_context}
+# JSON Fields:
+i: id
+s: Source text
+r: Translated text (Final output)
+# Format:
+In: [{{"i":"1","s":"Hello"}}]
+Out: {{"result":[{{"i":"1","r":"你好"}}]}}
+# Task:
+Translate `s` to the Target Language accurately and naturally based on the Context. Return ONLY valid minified JSON.
+"""
+        else:
+            if with_src:
+                sys_prompt = f"""# System Role:
+{system_role}
+# Context:
+- Target Language: {target_lang_name} ({target_lang_code})
+- Continues Rule: {concat_rule}
+- Reqs: {additional_context}
 # JSON Fields:
 i: id
 s: Source text (Original)
 t: Translation (To be reviewed)
 r: Revised translation (Final localized output)
 # Format:
-In: [{{\"i\":\"1\",\"s\":\"Hello\",\"t\":\"哈楼\"}}]
-Out: {{\"result\":[{{\"i\":\"1\",\"r\":\"你好\"}}]}}
+In: [{{"i":"1","s":"Hello","t":"哈楼"}}]
+Out: {{"result":[{{"i":"1","r":"你好"}}]}}
 # Task:
 STRICT BILINGUAL REVIEW: Deeply compare `t` against `s`. Fix ALL mistranslations, omissions, unidiomatic expressions, spelling, and grammar errors in `t` to ensure accurate localization. Return ONLY valid minified JSON.
 """
-        else:
-            sys_prompt = f"""# System Role:
-You are an expert in subtitle localization and Language Quality Assurance (LQA).
+            else:
+                sys_prompt = f"""# System Role:
+{system_role}
 # Context:
 - Target Language: {target_lang_name} ({target_lang_code})
 - Continues Rule: {concat_rule}
-- Reqs: {additional_context}{tb_prompt}
+- Reqs: {additional_context}
 # JSON Fields:
 i: id
 t: Translation (To be reviewed)
 r: Revised translation (Fixed output)
 # Format:
-In: [{{\"i\":\"1\",\"t\":\"哈楼\"}}]
-Out: {{\"result\":[{{\"i\":\"1\",\"r\":\"哈喽\"}}]}}
+In: [{{"i":"1","t":"哈楼"}}]
+Out: {{"result":[{{"i":"1","r":"哈喽"}}]}}
 # Task:
-Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY valid minified JSON.
+Fix spelling, grammar, unidiomatic expressions in `t` to ensure accurate localization. Return ONLY valid minified JSON.
 """
         return sys_prompt
     
@@ -727,10 +787,11 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
             input_file = self.file_path.get()
             output_file_base = self.output_path.get()
             
-            c_src = int(self.col_src.get())
-            c_tgt = int(self.col_tgt.get())
-            c_ep = int(self.col_ep.get())
-            c_res = int(self.col_res.get())
+            # 安全提取列号，允许留空（翻译模式下 c_tgt 可为空）
+            c_src = int(self.col_src.get()) if self.col_src.get().strip() else 0
+            c_tgt = int(self.col_tgt.get()) if self.col_tgt.get().strip() else 0
+            c_ep  = int(self.col_ep.get()) if self.col_ep.get().strip() else 0
+            c_res = int(self.col_res.get()) if self.col_res.get().strip() else 0
             r_start = int(self.row_start.get())
             
             with_src = self.var_with_source.get()
@@ -744,8 +805,20 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
             ui_model_name = self.model_box.get()
             actual_deployment_name = ENGINES_MAP.get(ui_model_name, ui_model_name)
 
-            selected_indices = self.ep_listbox.curselection()
-            selected_episodes = [self.ep_listbox.get(i) for i in selected_indices]
+            # --- 新增：获取任务模式与角色 ---
+            task_mode = self.task_mode_box.get()
+            system_role = self.role_box.get().strip()
+            if not system_role:
+                system_role = "You are an expert in subtitle localization."
+            is_translation_mode = "翻译" in task_mode or "Translation" in task_mode
+
+            # 【核心修改：集数提取优先判断手动输入框】
+            manual_eps_str = getattr(self, 'manual_ep_var', tk.StringVar()).get().strip()
+            if manual_eps_str:
+                selected_episodes = [ep.strip() for ep in manual_eps_str.split(",") if ep.strip()]
+            else:
+                selected_indices = self.ep_listbox.curselection()
+                selected_episodes = [self.ep_listbox.get(i) for i in selected_indices]
             
             selected_sheet_indices = self.sheet_listbox.curselection()
             
@@ -825,8 +898,8 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
                     return
             # ========================================================
 
-            # 传入解析好的 glossary_str，生成最终包含术语规则的提示词
-            sys_prompt = self.build_prompt(ui_lang_name, target_lang_code, additional_context, with_src, glossary_str)
+            # --- 传入新的模式和角色参数 ---
+            sys_prompt = self.build_prompt(ui_lang_name, target_lang_code, additional_context, with_src, task_mode, system_role)
 
             # ---------------- 注入：术语检查前置准备 ----------------
             enable_term_check = self.enable_term_check_var.get()
@@ -889,20 +962,32 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
 
                 episodes_data = {}
                 for row in range(r_start, ws.max_row + 1):
-                    tgt_text = ws.cell(row=row, column=c_tgt).value
-                    if not tgt_text:
-                        continue
+                    # 如果列号大于 0 且填了，才去读取，否则直接当做空字符串
+                    src_text_raw = ws.cell(row=row, column=c_src).value if c_src > 0 else ""
+                    tgt_text_raw = ws.cell(row=row, column=c_tgt).value if c_tgt > 0 else ""
+                    
+                    src_text_str = str(src_text_raw).strip() if src_text_raw else ""
+                    tgt_text_str = str(tgt_text_raw).strip() if tgt_text_raw else ""
+                    
+                    # --- 核心修改：翻译模式根据原文判断，拼写模式根据译文判断 ---
+                    if is_translation_mode:
+                        if not src_text_str:
+                            continue
+                    else:
+                        if not tgt_text_str:
+                            continue
                     
                     ep_val = str(ws.cell(row=row, column=c_ep).value or "未分类集数").strip()
                     original_row_values = [ws.cell(row=row, column=c).value for c in range(1, ws.max_column + 1)]
                     
-                    # === 调整 JSON 字段拼装顺序，让原文(s)排在译文(t)前面 ===
+                    # === 调整 JSON 字段拼装顺序 ===
                     item = {"i": str(row)}
-                    if with_src:
-                        src_text = ws.cell(row=row, column=c_src).value
-                        item["s"] = str(src_text) if src_text else ""
-                    item["t"] = str(tgt_text)
-                    # =======================================================
+                    if is_translation_mode:
+                        item["s"] = src_text_str
+                    else:
+                        if with_src:
+                            item["s"] = src_text_str
+                        item["t"] = tgt_text_str
                     
                     if ep_val not in episodes_data:
                         episodes_data[ep_val] = []
@@ -1013,17 +1098,19 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
                         if has_error:
                             break  # 彻底失败，中止内部循环跳到失败拦截
 
-                # 失败拦截
+                # 失败拦截与降级处理
                 if has_error:
                     with excel_lock:
                         fail_count += 1
                         error_logs.append([os.path.basename(input_file), f"[{sheet_name}] {ep_name}", error_msg])
-                    self.log(f"  ❌ 【检查失败拦截】本集已跳过写入。错误原因: {error_msg}")
-                    return # 这里原来是 continue，改为 return 跳出当前集数
+                    self.log(f"  ❌ 【检查失败拦截】AI 请求失败，将执行降级保存(仅原样输出+术语标记)。错误原因: {error_msg}")
+                    # 【核心修复】：取消了 return。让它继续往下走，走到 Excel 写入逻辑里去！
 
-                # ================= 如果全部成功，排队获取写入锁，处理 Excel 写入 =================
+                # ================= 无论成功失败，排队获取写入锁，处理 Excel 写入 =================
                 with excel_lock:
-                    success_count += 1
+                    if not has_error:
+                        success_count += 1  # 只有真正没报错的，才计入成功集数
+                        
                     self.parent.after(0, lambda c=current_idx, t=total_eps, s=success_count, f=fail_count: 
                                     self.var_stats.set(f"正在处理第{c}集，共{t}集，成功{s}集，失败{f}集"))
 
@@ -1047,17 +1134,26 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
                                     ep_ws.cell(row=current_new_row_idx, column=col_idx, value=val)
 
                                 row_id = item_data["id"]
+                                
                                 # 2. 提取原文、原译文、AI修改后译文
                                 try:
                                     src_text = str(item_data["original_row_values"][c_src-1])
                                 except:
                                     src_text = " ".join([str(x) for x in item_data["original_row_values"] if x])
-                                old_text = item_data["item"].get("t", item_data["item"].get("Translation", ""))
-                                new_text = res_mapping.get(row_id, old_text)
-                                
-                                # 3. 获取红蓝修改记录的富文本对象，并初始化原文富文本
-                                rich_old, rich_new = self.get_rich_text_diff(old_text, new_text)
-                                rich_src = src_text # 原文初始为普通字符串
+                                    
+                                # --- 新增：兼容“纯翻译”与“拼写检查”模式 ---
+                                if is_translation_mode:
+                                    # 严谨判断 c_tgt > 0，防止出现 -1 获取到列表最后一个元素的 Bug
+                                    old_text = str(item_data["original_row_values"][c_tgt-1]) if c_tgt > 0 and c_tgt-1 < len(item_data["original_row_values"]) else ""
+                                    new_text = res_mapping.get(row_id, "") # 没翻译出来就为空
+                                    rich_old = str(old_text)
+                                    rich_new = str(new_text)
+                                else:
+                                    old_text = item_data["item"].get("t", "")
+                                    new_text = res_mapping.get(row_id, old_text)
+                                    rich_old, rich_new = self.get_rich_text_diff(old_text, new_text)
+                                    
+                                rich_src = src_text
 
                                 found_terms_display = []
                                 if term_list:
@@ -1111,9 +1207,12 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
                                     if matched_new_terms:
                                         rich_new = self.apply_term_rich_text(rich_new, list(matched_new_terms), ignore_case)
                                 
-                                # 5. 覆盖写入三个列（原文、译文、结果）
-                                ep_ws.cell(row=current_new_row_idx, column=c_src).value = rich_src
-                                ep_ws.cell(row=current_new_row_idx, column=c_tgt).value = rich_old
+                                # 5. 覆盖写入列，增加 > 0 判断防止 openpyxl 报第0列错误
+                                if c_src > 0:
+                                    ep_ws.cell(row=current_new_row_idx, column=c_src).value = rich_src
+                                if c_tgt > 0:
+                                    ep_ws.cell(row=current_new_row_idx, column=c_tgt).value = rich_old
+                                    
                                 ep_ws.cell(row=current_new_row_idx, column=c_res).value = rich_new
                                 
                                 # 6. 写入展示列信息 (去重并保持顺序)
@@ -1142,11 +1241,19 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
                                     src_text = str(item_data["original_row_values"][c_src-1])
                                 except:
                                     src_text = " ".join([str(x) for x in item_data["original_row_values"] if x])
-                                old_text = item_data["item"].get("t", item_data["item"].get("Translation", ""))
-                                new_text = res_mapping.get(row_id, old_text)
-                                
-                                # 2. 获取红蓝修改记录的富文本对象，并初始化原文富文本
-                                rich_old, rich_new = self.get_rich_text_diff(old_text, new_text)
+                                    
+                                # --- 新增：兼容“纯翻译”与“拼写检查”模式 ---
+                                if is_translation_mode:
+                                    # 严谨判断 c_tgt > 0，防止出现 -1 获取到列表最后一个元素的 Bug
+                                    old_text = str(item_data["original_row_values"][c_tgt-1]) if c_tgt > 0 and c_tgt-1 < len(item_data["original_row_values"]) else ""
+                                    new_text = res_mapping.get(row_id, "") # 没翻译出来就为空
+                                    rich_old = str(old_text)
+                                    rich_new = str(new_text)
+                                else:
+                                    old_text = item_data["item"].get("t", "")
+                                    new_text = res_mapping.get(row_id, old_text)
+                                    rich_old, rich_new = self.get_rich_text_diff(old_text, new_text)
+                                    
                                 rich_src = src_text
 
                                 found_terms_display = []
@@ -1201,9 +1308,12 @@ Fix spelling, grammar issues and unidiomatic expression in `t`. Return ONLY vali
                                     if matched_new_terms:
                                         rich_new = self.apply_term_rich_text(rich_new, list(matched_new_terms), ignore_case)
 
-                                # 4. 覆盖写入三个列
-                                ws.cell(row=mapping_row, column=c_src).value = rich_src
-                                ws.cell(row=mapping_row, column=c_tgt).value = rich_old
+                                # 4. 覆盖写入列，增加 > 0 判断防止 openpyxl 报第0列错误
+                                if c_src > 0:
+                                    ws.cell(row=mapping_row, column=c_src).value = rich_src
+                                if c_tgt > 0:
+                                    ws.cell(row=mapping_row, column=c_tgt).value = rich_old
+                                    
                                 ws.cell(row=mapping_row, column=c_res).value = rich_new
                                 
                                 # 5. 写入展示列信息
@@ -6480,149 +6590,281 @@ def run_xlsx_translation():
             trans_dict = {}
             total = len(text_list)
             
-           # 逐条发送请求
-            for i, text in enumerate(text_list):
-                # ====== 新增：中断检测与终止输出 ======
-                if not trans_is_running.get():
-                    import os
-                    # 发现被按下停止键，立即清理刚复制出来的中间文件，拒绝输出残缺文件
-                    if os.path.exists(out_file):
-                        try: os.remove(out_file)
-                        except: pass
-                    root.after(0, lambda: messagebox.showwarning("已终止", "翻译已被手动停止！\n后续流程已中断，并撤销了输出文件。"))
-                    return # 直接一刀切断后续的所有执行，跳出线程
-                # ====================================
+            # ================= 新增：如果选中 ChatGPT，走 LQA 批量复用逻辑 =================
+            if "ChatGPT" in service_mode:
+                lqa_instance = next((obj for obj in globals().values() if type(obj).__name__ == "LQA_App"), None)
+                if not lqa_instance:
+                    root.after(0, lambda: messagebox.showerror("错误", "未能找到 LQA 引擎实例，无法复用大模型功能。"))
+                    return
 
-                root.after(0, lambda curr=i: btn_trans.config(text=f"翻译中... ( {curr} / {total} )，请勿关闭软件"))
+                api_endpoint_val = lqa_instance.api_endpoint.get().strip()
+                api_key_val = lqa_instance.api_key.get().strip()
+                if not api_endpoint_val or not api_key_val:
+                    root.after(0, lambda: messagebox.showerror("错误", "请先在上方配置全局 API 或在 LQA 页面填写接口信息！"))
+                    return
 
-                print(f"\n[{i+1}/{total}] 准备翻译原文: {text}")
+                from openai import AzureOpenAI
+                client = AzureOpenAI(
+                    azure_endpoint=api_endpoint_val,
+                    api_key=api_key_val,
+                    api_version=DEFAULT_API_VERSION
+                )
                 
-                if service_mode == "Google 原生网页爬虫 (无需API)":
-                    # ============ 模式 B：纯 HTML 网页爬虫 ============
-                    t_lang_g = t_lang.lower()
-                    if t_lang_g == "zh": t_lang_g = "zh-CN"
+                ui_model_name = dub_model_box.get()
+                actual_deployment_name = ENGINES_MAP.get(ui_model_name, ui_model_name)
+                t_limit = int(dub_token_limit.get())
+                target_lang_code = LANGUAGES_MAP.get(t_lang, t_lang)
+
+                sys_prompt = lqa_instance.build_prompt(
+                    target_lang_name=t_lang,
+                    target_lang_code=target_lang_code,
+                    additional_context=dub_context_text.get(),
+                    with_src=False,
+                    task_mode="纯翻译 (Translation)", 
+                    system_role=dub_role_box.get()
+                )
+
+                # ================= 【核心黑科技】：动态拦截 LQA 日志 =================
+                original_lqa_log = lqa_instance.log # 暂存原来的日志函数
+                
+                def hijacked_log(msg):
+                    dub_log(msg) # 将底层的所有日志强制重定向到配音的日志框中
                     
-                    print(f" -> [纯网页爬虫] 目标语言: {t_lang_g}")
+                # 【新增修复】：手动初始化 Token 计费器，防止未运行过 LQA 导致找不到该属性
+                lqa_instance.total_tokens_used = 0
+                # =================================================================
+
+                try:
+                    dub_log("\n====== 🚀 开始执行配音物料 ChatGPT 批量翻译 ======")
+                    dub_log(f"参数 | 目标语言: {t_lang} | 模型: {ui_model_name} | Token上限: {t_limit}/次")
+                    dub_log(f"任务 | 共提取到 {total} 条唯一的待翻译文本，正在分批打包...")
                     
-                    # 访问真正的 Web 页面地址，而非任何 API 后端
-                    url = "https://translate.google.com/m"
-                    params = {
-                        "sl": "auto",
-                        "tl": t_lang_g,
-                        "q": text
-                    }
-                    headers = {
-                        "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
-                    }
+                    current_batch = []
+                    current_tokens = 0
                     
-                    res = requests.get(url, params=params, headers=headers, timeout=15)
-                    print(f" -> [纯网页响应] 状态码: {res.status_code}")
-                    
-                    if res.status_code != 200:
-                        raise Exception(f"网页请求被拦截 (状态码 {res.status_code})")
-                    
-                    try:
-                        import re
-                        import html as html_lib
-                        
-                        # 纯正爬虫逻辑：在 HTML 源码中寻找存放翻译结果的 <div> 容器
-                        html_text = res.text
-                        match = re.search(r'<div[^>]*class="[^"]*result-container[^"]*"[^>]*>(.*?)</div>', html_text, re.IGNORECASE | re.DOTALL)
-                        
-                        if match:
-                            raw_result = match.group(1)
-                            # 还原网页中的换行标签
-                            raw_result = re.sub(r'<br\s*/?>', '\n', raw_result, flags=re.IGNORECASE)
-                            # 还原 HTML 实体符号（例如把 &#39; 还原成单引号）
-                            translated_text = html_lib.unescape(raw_result)
+                    for i, text in enumerate(text_list):
+                        if not trans_is_running.get():
+                            if os.path.exists(out_file):
+                                try: os.remove(out_file)
+                                except: pass
+                            root.after(0, lambda: messagebox.showwarning("已终止", "翻译已被手动停止！\\n后续流程已中断，并撤销了输出文件。"))
+                            return
                             
-                            trans_dict[text] = translated_text
-                            print(f" -> [HTML抠取结果]: {trans_dict[text][:50]}...")
-                        else:
-                            print(f" -> [解析失败] 未在网页中找到 result-container，可能网页结构已改变。")
-                            trans_dict[text] = text
-                    except Exception as e:
-                        print(f" -> [爬虫崩溃] 正则解析异常: {str(e)}")
-                        trans_dict[text] = text # 兜底保留原文
+                        # 不再仅仅更新按钮，也在日志框中输出一下打包进度
+                        root.after(0, lambda curr=i: btn_trans.config(text=f"打包 ChatGPT 请求中... ( {curr} / {total} )"))
                         
-                    # 真正的爬虫必须伪装人类浏览速度，加入1秒延迟防止触发验证码
-                    time.sleep(1)
-                elif service_mode == "Bing 翻译接口 (translators库)":
-                    # ============ 模式 C：基于 translators 库的纯净调用 ============
-                    t_lang_bing = t_lang.lower()
-                    if t_lang_bing == "zh": t_lang_bing = "zh-Hans"
-                    
-                    print(f" -> [Bing Translators 模式] 目标语言: {t_lang_bing}")
-                    
-                    try:
-                        import translators as ts
-                        
-                        # 直接调用库封装好的极简翻译接口，摒弃其他冗余内容处理
-                        result = ts.translate_text(text, translator='bing', to_language=t_lang_bing)
-                        
-                        if result:
-                            trans_dict[text] = str(result)
-                            print(f" -> [Bing 结果]: {trans_dict[text][:50]}...")
-                        else:
-                            print(" -> [Bing 警告] 翻译返回为空，保留原文")
-                            trans_dict[text] = text
+                        item = {"i": str(i), "s": str(text)}
+                        item_json_str = json.dumps(item, ensure_ascii=False)
+                        item_tokens = lqa_instance.estimate_tokens(item_json_str)
+
+                        if current_tokens + item_tokens > t_limit and current_batch:
+                            dub_log(f"\\n> 📦 第 {len(trans_dict) + len(current_batch)}/{total} 条进度触发阈值，准备发送 {len(current_batch)} 条文本...")
+                            root.after(0, lambda: btn_trans.config(text=f"请求 ChatGPT 翻译批次... (包含 {len(current_batch)} 条文本)"))
                             
-                    except ImportError:
-                        raise Exception("缺少核心依赖库！\n请先在系统命令行终端运行: pip install translators")
-                    except Exception as e:
-                        print(f" -> [Bing 翻译崩溃] 异常详情: {str(e)}")
-                        trans_dict[text] = text # 解析失败时保留原文兜底
-                        
-                    # 依然保留适当的延迟，防止高频触发 Bing 的临时 IP 封锁
-                    time.sleep(1)
-                elif service_mode == "Google 翻译接口 (translators库)":
-                    # ============ 新增模式：基于 translators 库的 Google 调用 ============
-                    # Google 的中文代码通常要求是 zh-CN 或 zh-TW
-                    t_lang_google = t_lang.lower()
-                    if t_lang_google == "zh": t_lang_google = "zh-CN"
-                    
-                    print(f" -> [Google Translators 模式] 目标语言: {t_lang_google}")
-                    
-                    try:
-                        import translators as ts
-                        
-                        # 调用 translators 库封装好的 Google 引擎
-                        result = ts.translate_text(text, translator='google', to_language=t_lang_google)
-                        
-                        if result:
-                            trans_dict[text] = str(result)
-                            print(f" -> [Google 结果]: {trans_dict[text][:50]}...")
-                        else:
-                            print(" -> [Google 警告] 翻译返回为空，保留原文")
-                            trans_dict[text] = text
+                            # --- 核心复用与计费计算 ---
+                            tokens_before = lqa_instance.total_tokens_used
+                            res = lqa_instance._send_batch_request(client, ui_model_name, actual_deployment_name, sys_prompt, current_batch)
+                            tokens_after = lqa_instance.total_tokens_used
                             
-                    except ImportError:
-                        raise Exception("缺少核心依赖库！\n请先在系统命令行终端运行: pip install translators")
-                    except Exception as e:
-                        print(f" -> [Google 翻译崩溃] 异常详情: {str(e)}")
-                        trans_dict[text] = text # 解析失败时保留原文兜底
+                            cost = tokens_after - tokens_before
+                            dub_log(f"  ✅ 批次翻译成功！本次消耗: {cost} tokens | 当前任务累计消耗: {tokens_after} tokens")
+                            
+                            for r in res:
+                                idx_str = r.get("i", "")
+                                if idx_str.isdigit():
+                                    trans_dict[text_list[int(idx_str)]] = r.get("r", "")
+                                    
+                            current_batch = []
+                            current_tokens = 0
+
+                        current_batch.append(item)
+                        current_tokens += item_tokens
+
+                    if current_batch:
+                        dub_log(f"\n> 📦 正在发送最后一批次 {len(current_batch)} 条文本...")
+                        root.after(0, lambda: btn_trans.config(text=f"请求 ChatGPT 最后一批次... (包含 {len(current_batch)} 条文本)"))
                         
-                    # Google 相对宽容，但依然保留 1 秒延迟防止长期高频调用的临时风控
-                    time.sleep(1)
-            
-                else:
-                    # ============ 模式 C：自定义 API ============
-                    print(f" -> [自定义API 模式] 目标语言: {t_lang.upper()}")
-                    payload = {'text': text, 'source_lang': 'auto', 'target_lang': t_lang.upper()}
-                    res = requests.post(api_url, json=payload, timeout=15)
+                        # --- 核心复用与计费计算 ---
+                        tokens_before = lqa_instance.total_tokens_used
+                        res = lqa_instance._send_batch_request(client, ui_model_name, actual_deployment_name, sys_prompt, current_batch)
+                        tokens_after = lqa_instance.total_tokens_used
+                        
+                        cost = tokens_after - tokens_before
+                        dub_log(f"  ✅ 批次翻译成功！本次消耗: {cost} tokens | 当前任务累计消耗: {tokens_after} tokens")
+                        
+                        for r in res:
+                            idx_str = r.get("i", "")
+                            if idx_str.isdigit():
+                                trans_dict[text_list[int(idx_str)]] = r.get("r", "")
+                                
+                    dub_log("\\n====== ✨ 所有网络翻译请求已完成！正在写入表格... ======")
                     
-                    print(f" -> [自定义API 响应] 状态码: {res.status_code}")
-                    if res.status_code != 200:
-                        raise Exception(f"API接口报错 (状态码 {res.status_code}):\n{res.text}")
+                except Exception as e:
+                    root.after(0, lambda err=str(e): messagebox.showerror("请求失败", f"ChatGPT API 错误:\\n{err}"))
+                    dub_log(f"\\n❌ 发生致命错误: {str(e)}")
+                    return
+                finally:
+                    # ================= 无论成功报错，物归原主 =================
+                    # 执行完毕后，把 LQA 原来的日志函数还回去，绝不破坏 LQA 原有功能
+                    lqa_instance.log = original_lqa_log
+
+                if current_batch:
+                    root.after(0, lambda: btn_trans.config(text=f"请求 ChatGPT 最后一批次... (包含 {len(current_batch)} 条文本)"))
+                    try:
+                        res = lqa_instance._send_batch_request(client, ui_model_name, actual_deployment_name, sys_prompt, current_batch)
+                        for r in res:
+                            idx_str = r.get("i", "")
+                            if idx_str.isdigit():
+                                trans_dict[text_list[int(idx_str)]] = r.get("r", "")
+                    except Exception as e:
+                        root.after(0, lambda err=str(e): messagebox.showerror("请求失败", f"ChatGPT API 错误:\n{err}"))
+                        return
+                        
+            else:
+                # ================= 原有的逐条请求逻辑 (Google/Bing/自定义API) =================
+                # 逐条发送请求
+                for i, text in enumerate(text_list):
+                # ====== 新增：中断检测与终止输出 ======
+                    if not trans_is_running.get():
+                        import os
+                        # 发现被按下停止键，立即清理刚复制出来的中间文件，拒绝输出残缺文件
+                        if os.path.exists(out_file):
+                            try: os.remove(out_file)
+                            except: pass
+                        root.after(0, lambda: messagebox.showwarning("已终止", "翻译已被手动停止！\n后续流程已中断，并撤销了输出文件。"))
+                        return # 直接一刀切断后续的所有执行，跳出线程
+                    # ====================================
+
+                    root.after(0, lambda curr=i: btn_trans.config(text=f"翻译中... ( {curr} / {total} )，请勿关闭软件"))
+
+                    print(f"\n[{i+1}/{total}] 准备翻译原文: {text}")
                     
-                    data = res.json()
-                    if 'translations' in data: trans_dict[text] = data['translations'][0]['text']
-                    elif 'data' in data: trans_dict[text] = str(data['data'])
-                    elif 'text' in data: trans_dict[text] = str(data['text'])
-                    else: trans_dict[text] = text
-                    
-                    print(f" -> [自定义API 结果]: {trans_dict[text]}")
-                    time.sleep(0.1)
+                    if service_mode == "Google 原生网页爬虫 (无需API)":
+                        # ============ 模式 B：纯 HTML 网页爬虫 ============
+                        t_lang_g = t_lang.lower()
+                        if t_lang_g == "zh": t_lang_g = "zh-CN"
+                        
+                        print(f" -> [纯网页爬虫] 目标语言: {t_lang_g}")
+                        
+                        # 访问真正的 Web 页面地址，而非任何 API 后端
+                        url = "https://translate.google.com/m"
+                        params = {
+                            "sl": "auto",
+                            "tl": t_lang_g,
+                            "q": text
+                        }
+                        headers = {
+                            "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36"
+                        }
+                        
+                        res = requests.get(url, params=params, headers=headers, timeout=15)
+                        print(f" -> [纯网页响应] 状态码: {res.status_code}")
+                        
+                        if res.status_code != 200:
+                            raise Exception(f"网页请求被拦截 (状态码 {res.status_code})")
+                        
+                        try:
+                            import re
+                            import html as html_lib
+                            
+                            # 纯正爬虫逻辑：在 HTML 源码中寻找存放翻译结果的 <div> 容器
+                            html_text = res.text
+                            match = re.search(r'<div[^>]*class="[^"]*result-container[^"]*"[^>]*>(.*?)</div>', html_text, re.IGNORECASE | re.DOTALL)
+                            
+                            if match:
+                                raw_result = match.group(1)
+                                # 还原网页中的换行标签
+                                raw_result = re.sub(r'<br\s*/?>', '\n', raw_result, flags=re.IGNORECASE)
+                                # 还原 HTML 实体符号（例如把 &#39; 还原成单引号）
+                                translated_text = html_lib.unescape(raw_result)
+                                
+                                trans_dict[text] = translated_text
+                                print(f" -> [HTML抠取结果]: {trans_dict[text][:50]}...")
+                            else:
+                                print(f" -> [解析失败] 未在网页中找到 result-container，可能网页结构已改变。")
+                                trans_dict[text] = text
+                        except Exception as e:
+                            print(f" -> [爬虫崩溃] 正则解析异常: {str(e)}")
+                            trans_dict[text] = text # 兜底保留原文
+                            
+                        # 真正的爬虫必须伪装人类浏览速度，加入1秒延迟防止触发验证码
+                        time.sleep(1)
+                    elif service_mode == "Bing 翻译接口 (translators库)":
+                        # ============ 模式 C：基于 translators 库的纯净调用 ============
+                        t_lang_bing = t_lang.lower()
+                        if t_lang_bing == "zh": t_lang_bing = "zh-Hans"
+                        
+                        print(f" -> [Bing Translators 模式] 目标语言: {t_lang_bing}")
+                        
+                        try:
+                            import translators as ts
+                            
+                            # 直接调用库封装好的极简翻译接口，摒弃其他冗余内容处理
+                            result = ts.translate_text(text, translator='bing', to_language=t_lang_bing)
+                            
+                            if result:
+                                trans_dict[text] = str(result)
+                                print(f" -> [Bing 结果]: {trans_dict[text][:50]}...")
+                            else:
+                                print(" -> [Bing 警告] 翻译返回为空，保留原文")
+                                trans_dict[text] = text
+                                
+                        except ImportError:
+                            raise Exception("缺少核心依赖库！\n请先在系统命令行终端运行: pip install translators")
+                        except Exception as e:
+                            print(f" -> [Bing 翻译崩溃] 异常详情: {str(e)}")
+                            trans_dict[text] = text # 解析失败时保留原文兜底
+                            
+                        # 依然保留适当的延迟，防止高频触发 Bing 的临时 IP 封锁
+                        time.sleep(1)
+                    elif service_mode == "Google 翻译接口 (translators库)":
+                        # ============ 新增模式：基于 translators 库的 Google 调用 ============
+                        # Google 的中文代码通常要求是 zh-CN 或 zh-TW
+                        t_lang_google = t_lang.lower()
+                        if t_lang_google == "zh": t_lang_google = "zh-CN"
+                        
+                        print(f" -> [Google Translators 模式] 目标语言: {t_lang_google}")
+                        
+                        try:
+                            import translators as ts
+                            
+                            # 调用 translators 库封装好的 Google 引擎
+                            result = ts.translate_text(text, translator='google', to_language=t_lang_google)
+                            
+                            if result:
+                                trans_dict[text] = str(result)
+                                print(f" -> [Google 结果]: {trans_dict[text][:50]}...")
+                            else:
+                                print(" -> [Google 警告] 翻译返回为空，保留原文")
+                                trans_dict[text] = text
+                                
+                        except ImportError:
+                            raise Exception("缺少核心依赖库！\n请先在系统命令行终端运行: pip install translators")
+                        except Exception as e:
+                            print(f" -> [Google 翻译崩溃] 异常详情: {str(e)}")
+                            trans_dict[text] = text # 解析失败时保留原文兜底
+                            
+                        # Google 相对宽容，但依然保留 1 秒延迟防止长期高频调用的临时风控
+                        time.sleep(1)
+                
+                    else:
+                        # ============ 模式 C：自定义 API ============
+                        print(f" -> [自定义API 模式] 目标语言: {t_lang.upper()}")
+                        payload = {'text': text, 'source_lang': 'auto', 'target_lang': t_lang.upper()}
+                        res = requests.post(api_url, json=payload, timeout=15)
+                        
+                        print(f" -> [自定义API 响应] 状态码: {res.status_code}")
+                        if res.status_code != 200:
+                            raise Exception(f"API接口报错 (状态码 {res.status_code}):\n{res.text}")
+                        
+                        data = res.json()
+                        if 'translations' in data: trans_dict[text] = data['translations'][0]['text']
+                        elif 'data' in data: trans_dict[text] = str(data['data'])
+                        elif 'text' in data: trans_dict[text] = str(data['text'])
+                        else: trans_dict[text] = text
+                        
+                        print(f" -> [自定义API 结果]: {trans_dict[text]}")
+                        time.sleep(0.1)
                     
             # 进度：正在写入文件
             root.after(0, lambda: btn_trans.config(text="正在生成带格式的 Excel 文件..."))
@@ -6651,8 +6893,7 @@ def run_xlsx_translation():
     btn_trans.config(text="正在读取并分析表格...", state=tk.DISABLED)
     btn_trans_stop.config(state=tk.NORMAL) # 激活停止按钮
     root.update()
-    
-    import threading
+
     threading.Thread(target=translation_worker, daemon=True).start()
     
 # --- 核心函数 1：配音物料表批量合并（严格对应纯净版模板格式） ---
@@ -6828,6 +7069,8 @@ def run_dubbing_merge():
     except Exception as e:
         messagebox.showerror("错误", f"处理过程中发生错误:\n{str(e)}")
 
+
+
 # --- UI 布局区 ---
 # 模块 1：配音物料合并
 f_dub = ttk.LabelFrame(tab_dubbing, text=" 📂 第一步：批量合并 [配音信息表] 与 [配音角色表] ", padding=15)
@@ -6883,7 +7126,8 @@ service_opts = [
     "自定义 API (需填下方地址)", 
     "Google 原生网页爬虫 (无需API)",
     "Google 翻译接口 (translators库)",
-    "Bing 翻译接口 (translators库)"
+    "Bing 翻译接口 (translators库)",
+    "ChatGPT API (复用 LQA 引擎)"
 ]
 ttk.Combobox(f_service, textvariable=trans_service_mode, values=service_opts, width=32, state="readonly").pack(side=tk.LEFT)
 
@@ -6897,9 +7141,40 @@ f_lang.grid(row=4, column=0, columnspan=3, sticky="w", pady=5)
 ttk.Label(f_lang, text="目标语言 (如 EN, ZH, ID, 可手动输入):").pack(side=tk.LEFT, padx=(0, 5))
 ttk.Combobox(f_lang, textvariable=deepl_tgt_lang, values=["EN", "ZH", "JA", "KO", "ID", "ES", "RU", "FR", "DE"], width=15).pack(side=tk.LEFT)
 
+# ================= 新增：配音翻译的专属 ChatGPT 配置区 =================
+f_dub_chatgpt = ttk.Frame(f_trans)
+
+# 1. 角色与模型
+ttk.Label(f_dub_chatgpt, text="系统角色:").grid(row=0, column=0, sticky="w", pady=2)
+dub_role_box = ttk.Combobox(f_dub_chatgpt, values=[
+    "You are a professional native translator with extensive experience in script and dubbing translation.",
+    "You are an expert in subtitle localization and voice-over adaptation.",
+    "You are a colloquial dialogue translator, making translations sound natural and spoken.",
+    "You are a professional native translator with extensive experience in Localized Translation Field"
+], width=45)
+dub_role_box.current(0)
+dub_role_box.grid(row=0, column=1, sticky="w", padx=5)
+
+ttk.Label(f_dub_chatgpt, text="选择模型:").grid(row=0, column=2, sticky="w", padx=(10,0))
+dub_model_box = ttk.Combobox(f_dub_chatgpt, values=list(ENGINES_MAP.keys()), width=15)
+dub_model_box.current(0)
+dub_model_box.grid(row=0, column=3, sticky="w", padx=5)
+
+# 2. 背景要求与 Token
+ttk.Label(f_dub_chatgpt, text="要求/背景:").grid(row=1, column=0, sticky="w", pady=2)
+dub_context_text = ttk.Entry(f_dub_chatgpt, width=47)
+dub_context_text.insert(0, "准确翻译配音文案，保留语气和专有名词，输出符合本地化习惯的自然对白。")
+dub_context_text.grid(row=1, column=1, sticky="w", padx=5)
+
+ttk.Label(f_dub_chatgpt, text="Token/次:").grid(row=1, column=2, sticky="w", padx=(10,0))
+dub_token_limit = ttk.Entry(f_dub_chatgpt, width=15)
+dub_token_limit.insert(0, "2000")
+dub_token_limit.grid(row=1, column=3, sticky="w", padx=5)
+# ====================================================================
+
 # --- 底部操作按钮组 ---
 btn_frame = ttk.Frame(f_trans)
-btn_frame.grid(row=5, column=0, columnspan=3, pady=15)
+btn_frame.grid(row=6, column=0, columnspan=3, pady=15) # 注意：这里自动下移到了 row=6
 
 btn_trans = ttk.Button(btn_frame, text="🌐 开始执行 XLSX 深度翻译", command=run_xlsx_translation, style='TButton')
 btn_trans.pack(side=tk.LEFT, padx=10, ipadx=20)
@@ -6907,6 +7182,36 @@ btn_trans.pack(side=tk.LEFT, padx=10, ipadx=20)
 btn_trans_stop = ttk.Button(btn_frame, text="⏹ 停止翻译", command=stop_xlsx_translation, style='TButton', state=tk.DISABLED)
 btn_trans_stop.pack(side=tk.LEFT, padx=10, ipadx=20)
 # ===============================================================
+# ================= 新增：配音翻译的专属日志显示框 =================
+f_dub_log = ttk.Frame(f_trans)
+dub_log_text = scrolledtext.ScrolledText(f_dub_log, height=10, width=80, state=tk.DISABLED, bg="#f9f9f9")
+dub_log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+# 3. 动态显示/隐藏联动
+def update_dub_trans_ui(*args):
+    mode = trans_service_mode.get()
+    if "ChatGPT" in mode:
+        f_dub_chatgpt.grid(row=5, column=0, columnspan=4, sticky="w", pady=(5, 10))
+        # 只要选了 ChatGPT 就显示日志框 (放在第7行)
+        f_dub_log.grid(row=7, column=0, columnspan=4, sticky="we", pady=(0, 5)) 
+        f_api.grid_remove() 
+    else:
+        f_dub_chatgpt.grid_remove()
+        f_dub_log.grid_remove() # 隐藏日志框
+        if "自定义 API" in mode: f_api.grid()
+        else: f_api.grid_remove()
+
+def dub_log(message):
+    """跨线程安全的日志打印函数"""
+    def _append():
+        dub_log_text.config(state=tk.NORMAL)
+        dub_log_text.insert(tk.END, str(message) + "\n")
+        dub_log_text.see(tk.END)
+        dub_log_text.config(state=tk.DISABLED)
+    root.after(0, _append)
+# ===============================================================
+trans_service_mode.trace_add("write", update_dub_trans_ui)
+update_dub_trans_ui() # 初始化执行
 
 update_m0_ui()
 update_m8_ui()
