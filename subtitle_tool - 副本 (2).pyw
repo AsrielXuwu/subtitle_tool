@@ -6583,9 +6583,6 @@ dub_sample_var = tk.StringVar(value="无需试音，提供样音")
 # === 新增：控制翻译运行状态的全局变量 ===
 trans_is_running = tk.BooleanVar(value=False)
 
-# === 新增：是否保留源语言的变量 ===
-trans_keep_source = tk.IntVar(value=0)
-
 def stop_xlsx_translation():
     if trans_is_running.get():
         trans_is_running.set(False)
@@ -6601,9 +6598,6 @@ def run_xlsx_translation():
     
     service_mode = trans_service_mode.get()
     use_custom_api = (service_mode == "自定义 API (需填下方地址)")
-
-    # === 新增：获取用户是否勾选了保留源语言 ===
-    keep_src = trans_keep_source.get() == 1
     
     if not all([in_file, out_file, t_lang]):
         return messagebox.showwarning("警告", "请完整填写输入/输出文件路径及目标语言！")
@@ -6921,16 +6915,7 @@ def run_xlsx_translation():
                     for cell in row:
                         val = cell.value
                         if isinstance(val, str) and val.strip() and not val.startswith('='):
-                            orig_text = val.strip()
-                            translated_text = trans_dict.get(orig_text, orig_text)
-                            
-                            # === 新增：智能保留源语言逻辑 ===
-                            # 如果勾选了保留，且翻译成功（译文和原文不一样），则进行换行拼接
-                            if keep_src and translated_text and translated_text != orig_text:
-                                cell.value = f"{val}\n\n{translated_text}"
-                            else:
-                                cell.value = translated_text
-                            # ===============================
+                            cell.value = trans_dict.get(val.strip(), val)
                             
             wb.save(out_file)
             root.after(0, lambda: messagebox.showinfo("完成", f"翻译完毕！\n共深度翻译了 {total} 条唯一文本，源文件格式及插入图片已完美保留。"))
@@ -7196,9 +7181,6 @@ f_lang = ttk.Frame(f_trans)
 f_lang.grid(row=4, column=0, columnspan=3, sticky="w", pady=5)
 ttk.Label(f_lang, text="目标语言 (如 EN, ZH, ID, 可手动输入):").pack(side=tk.LEFT, padx=(0, 5))
 ttk.Combobox(f_lang, textvariable=deepl_tgt_lang, values=["EN", "ZH", "JA", "KO", "ID", "ES", "RU", "FR", "DE"], width=15).pack(side=tk.LEFT)
-
-# === 新增：保留源语言复选框 (紧贴在目标语言下拉框右侧) ===
-ttk.Checkbutton(f_lang, text="翻译保留源语言 (原文+换行+译文)", variable=trans_keep_source).pack(side=tk.LEFT, padx=(20, 0))
 
 # ================= 新增：配音翻译的专属 ChatGPT 配置区 =================
 f_dub_chatgpt = ttk.Frame(f_trans)

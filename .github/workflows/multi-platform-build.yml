@@ -48,6 +48,17 @@ jobs:
     - name: Build with PyInstaller (macOS)
       if: startsWith(matrix.os, 'macos')
       run: |
+        # 1. 动态获取 GitHub Actions 虚拟机中当前 Python 真实的 Tcl 和 Tk 库物理路径
+        TCL_DIR=$(python -c "import tkinter; r=tkinter.Tk(); print(r.tk.exprstring('\$tcl_library')); r.destroy()")
+        TK_DIR=$(python -c "import tkinter; r=tkinter.Tk(); print(r.tk.exprstring('\$tk_library')); r.destroy()")
+        echo "[检查] 成功定位虚拟机 TCL 路径: $TCL_DIR"
+        echo "[检查] 成功定位虚拟机 TK 路径: $TK_DIR"
+        
+        # 2. 导出为临时全局环境变量，强行给 PyInstaller 的内置底层钩子“导航”
+        export TCL_LIBRARY="$TCL_DIR"
+        export TK_LIBRARY="$TK_DIR"
+        
+        # 3. 执行原有打包命令
         pyinstaller --windowed --name "SubtitleToolbox" --copy-metadata tiktoken --hidden-import tiktoken_ext.openai_public --hidden-import tiktoken_ext --collect-all tkinterdnd2 subtitle_tool.pyw
 
     # 修改点 1：手动把 macOS 的 .app 压成 zip，并规范不同平台的文件名
