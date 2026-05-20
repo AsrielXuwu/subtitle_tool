@@ -2409,7 +2409,7 @@ def scan_all_styles_from_ass(filepath):
 def process_ass_editor(input_dir, out_dir, mode_cfg):
     pass # Reserved, actual logic integrated into execute_ass_editor
 
-def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, sel_blocks=None):
+def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, sel_blocks=None, single_source=False):
     is_header = col_str.startswith("Header")
     if not is_header:
         col_idx = int(col_str.split(':')[0])
@@ -2418,12 +2418,26 @@ def process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, 
     tgt_files = [f for f in os.listdir(tgt_dir) if f.lower().endswith(ext)]
     if not tgt_files: raise ValueError(f"待接收数据的目标文件夹中没有 {ext} 文件！")
     
+    # 新增：如果是单源文件模式，获取源文件夹中第一个文件作为统一模板
+    single_src_file_path = None
+    if single_source and is_header and fmt == 'ASS':
+        src_files_list = [f for f in os.listdir(src_dir) if f.lower().endswith(ext)]
+        if not src_files_list:
+            raise ValueError(f"开启了单源文件模式，但提供数据的源文件夹中没有 {ext} 文件！")
+        # 取按字母排序的第一个文件作为统一的源模板
+        single_src_file_path = os.path.join(src_dir, sorted(src_files_list)[0])
+        
     all_errors = []
     processed_count = 0
     os.makedirs(out_dir, exist_ok=True)
-    
+   
     for file in tgt_files:
-        src_file = os.path.join(src_dir, file)
+        # 新增：如果启用了单源文件模式，则强制修改 src_file 的路径指向统一模板
+        if single_source and is_header and fmt == 'ASS':
+            src_file = single_src_file_path
+        else:
+            src_file = os.path.join(src_dir, file)
+            
         tgt_file = os.path.join(tgt_dir, file)
         out_file = os.path.join(out_dir, file)
     
@@ -3106,11 +3120,14 @@ def run_column_copy():
     if not src_dir or not tgt_dir or not out_dir: return messagebox.showwarning("警告", "请完整选择目录！")
     
     sel_blocks = []
+    single_source = False # 新增变量
     if fmt == "ASS" and col_str.startswith("Header"):
         sel_blocks = [lb_eff_headers.get(i) for i in lb_eff_headers.curselection()]
+        single_source = eff_single_source_var.get() # 获取 UI 复选框的值
         
     try:
-        processed_count, err_count = process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, sel_blocks)
+        # 新增：传入 single_source 参数
+        processed_count, err_count = process_column_copy_batch(src_dir, tgt_dir, out_dir, err_rep, fmt, col_str, sel_blocks, single_source)
         
         if col_str.startswith("Header"):
             messagebox.showinfo("完成", f"完美处理 {processed_count} 个文件！所选文件头区块已成功同步覆盖。")
@@ -5913,6 +5930,11 @@ cb_eff_col.pack(side=tk.LEFT)
 
 # --- 新增：文件头替换子选项面板 ---
 f_eff_header = ttk.LabelFrame(tab_eff, text="文件头同步子选项 (提取前需扫描源文件夹)", padding=10)
+
+# ================= 新增：单源文件模式选项 =================
+eff_single_source_var = tk.BooleanVar(value=False)
+ttk.Checkbutton(f_eff_header, text="单源文件模式 (选中后，将源文件夹中第一个ass文件作为统一模板，覆盖到目标文件夹所有文件)", variable=eff_single_source_var).pack(anchor="w", pady=(0, 5))
+# =======================================================
 
 ttk.Button(f_eff_header, text="🔍 扫描源文件夹文件头", command=scan_eff_headers).pack(anchor="w", pady=(0, 5))
 ttk.Label(f_eff_header, text="选择需要覆盖同步的文件头区块 (支持按住Ctrl多选，都不选则默认全量覆盖整个文件头):").pack(anchor="w")
