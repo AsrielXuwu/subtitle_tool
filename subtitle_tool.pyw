@@ -2328,6 +2328,10 @@ def process_excel_replace_batch(sub_dir, out_dir, excel_file, report_file, mode,
     os.makedirs(out_dir, exist_ok=True)
     report_data = []
     
+    # ================= 新增：匹配追踪器 =================
+    matched_excel_entries = set()
+    # =================================================
+    
     for file in files:
         filepath = os.path.join(sub_dir, file)
         out_path = os.path.join(out_dir, file)
@@ -2347,6 +2351,9 @@ def process_excel_replace_batch(sub_dir, out_dir, excel_file, report_file, mode,
             for block in blocks:
                 key = tuple(get_srt_val(block, c) for c in sub_refs)
                 if key_counts.get(key, 0) == 1 and key in file_map:
+                    # 记录成功匹配的条目
+                    matched_excel_entries.add((base_name, key))
+                    
                     old_val = get_srt_val(block, sub_tgt)
                     new_val = file_map[key]
                     if old_val != new_val:
@@ -2379,6 +2386,9 @@ def process_excel_replace_batch(sub_dir, out_dir, excel_file, report_file, mode,
                     if len(parts) >= 10:
                         key = tuple(get_ass_val(parts, c) for c in sub_refs)
                         if key_counts.get(key, 0) == 1 and key in file_map:
+                            # 记录成功匹配的条目
+                            matched_excel_entries.add((base_name, key))
+                            
                             old_val = get_ass_val(parts, sub_tgt)
                             new_val = file_map[key]
                             if old_val != new_val:
@@ -2392,6 +2402,21 @@ def process_excel_replace_batch(sub_dir, out_dir, excel_file, report_file, mode,
                 
             with open(out_path, 'w', encoding='utf-8') as f:
                 f.write("\n".join(out_lines))
+                
+    # ================= 新增：未匹配项写入报告 =================
+    # 在所有文件遍历完成后，由于 excel_map 里存的已经是全面清洗后(带 \N 等)的数据
+    # 直接和追踪器对比即可完美输出未匹配的条目
+    for f_key, keys_dict in excel_map.items():
+        for k, expected_val in keys_dict.items():
+            if (f_key, k) not in matched_excel_entries:
+                report_data.append({
+                    "文件名": f_key, 
+                    "匹配依据": " | ".join(k),
+                    "替换的列": sub_tgt, 
+                    "原内容": "【未在字幕中找到匹配条目】", 
+                    "新内容": expected_val
+                })
+    # ==========================================================
                 
     if report_data:
         pd.DataFrame(report_data).to_excel(report_file, index=False)
