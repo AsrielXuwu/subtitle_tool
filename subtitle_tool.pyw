@@ -2214,6 +2214,191 @@ def process_replace(report_file, srt_dir, out_summary, col_filename_str, col_id_
     if summary_data: pd.DataFrame(summary_data).to_excel(out_summary, index=False)
     return len(summary_data), len(srt_cache)
 
+# ================= 新增：Excel 批量替换功能核心逻辑 =================
+ASS_COLS = ["Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect", "Text"]
+SRT_COLS = ["ID", "Timeline", "Text"]
+
+def normalize_text(val, mode):
+    """
+    【无差别终极清洗逻辑】
+    不再依赖UI列名判断！只要文本中存在换行，一律清洗幽灵空格并按目标格式强制重新拼接。
+    """
+    if pd.isna(val): return ""
+    
+    # 1. 强制转为字符串并剔除整体最外层的首尾空白
+    s = str(val).strip() 
+    if not s: return ""
+    
+    # 2. 修复 Pandas 自动加上的 .0 后缀（针对数字ID等）
+    if s.endswith('.0') and s.replace('.0', '').isdigit(): 
+        s = s[:-2]
+        
+    # 3. 将所有可能混入的换行符（回车、字面量\N等）统统先转为真实的 \n 便于切割
+    # 这一步将 Excel原生回车、手打的 \n 或 \N 全面统一
+    s = s.replace('\r\n', '\n').replace('\r', '\n').replace('\\N', '\n').replace('\\n', '\n')
+    
+    # 4. 核心修复：无条件多行处理！
+    # 只要字符串里存在 \n，就立刻触发多行清洗引擎
+    if '\n' in s:
+        # 逐行切开，剔除每一行首尾的幽灵空格
+        lines = [line.strip() for line in s.split('\n')]
+        # ASS 强制拼成字面量 \N，SRT 拼成真实回车 \n
+        join_char = '\\N' if mode == "ASS" else '\n'
+        s = join_char.join(lines).strip()
+        
+    return s
+
+def get_ass_val(parts, col_name):
+    idx = ASS_COLS.index(col_name)
+    if idx == 0:
+        val = parts[0].split(':', 1)[1].strip() if ':' in parts[0] else parts[0].strip()
+    else:
+        val = parts[idx]
+        
+    # ASS 文件提取的内容同样过一遍清洗器，确保和 Excel 的格式完全对齐
+    return normalize_text(val, mode="ASS")
+
+def set_ass_val(parts, col_name, new_val):
+    idx = ASS_COLS.index(col_name)
+    # 此时 new_val 已经是处理好的带大写 \N 的字符串，无需再转，直接原样拼接
+    if idx == 0:
+        prefix = parts[0].split(':', 1)[0] if ':' in parts[0] else "Dialogue"
+        parts[0] = f"{prefix}: {new_val}"
+    else:
+        parts[idx] = new_val
+
+def get_srt_val(block, col_name):
+    val = str(block.get(col_name, ""))
+    return normalize_text(val, mode="SRT")
+
+def set_srt_val(block, col_name, new_val):
+    block[col_name] = new_val
+
+def process_excel_replace_batch(sub_dir, out_dir, excel_file, report_file, mode, 
+                                excel_file_col, excel_refs, sub_refs, excel_tgt, sub_tgt):
+                                
+    # 强制全表按字符串读取
+    df = pd.read_excel(excel_file, dtype=str)
+    
+    excel_tgt_idx = col2num(excel_tgt)
+    excel_file_idx = col2num(excel_file_col)
+    excel_ref_indices = [col2num(c) for c in excel_refs]
+    
+    if max(excel_ref_indices + [excel_tgt_idx, excel_file_idx]) >= len(df.columns):
+        raise ValueError(f"Excel指定的列字母超出范围！最大有效列为第 {len(df.columns)} 列。")
+        
+    excel_map = {}
+    dup_keys_map = {}
+    
+    for index, row in df.iterrows():
+        try:
+            # 取消了所有的 is_text_col 参数，代码变得极其干净和强壮
+            file_key = normalize_text(row.iloc[excel_file_idx], mode=mode)
+            if not file_key: continue
+            
+            key = tuple(normalize_text(row.iloc[i], mode=mode) for i in excel_ref_indices)
+            val = normalize_text(row.iloc[excel_tgt_idx], mode=mode) if pd.notna(row.iloc[excel_tgt_idx]) else ""
+            
+            # ============ 终端调试输出 ============
+            print(f"[Excel 行 {index+2}] 集数: {repr(file_key)}")
+            print(f"  -> 参考列 key: {repr(key)}")
+            print(f"  -> 目标值 val: {repr(val)}\n")
+            # ====================================
+            
+            if file_key not in excel_map:
+                excel_map[file_key] = {}
+                dup_keys_map[file_key] = set()
+                
+            if key in excel_map[file_key]:
+                dup_keys_map[file_key].add(key)
+            else:
+                excel_map[file_key][key] = val
+        except Exception as e:
+            print(f"[警告] 解析 Excel 第 {index+2} 行失败: {e}")
+            continue
+            
+    for f_key, dup_keys in dup_keys_map.items():
+        for k in dup_keys:
+            if k in excel_map[f_key]:
+                del excel_map[f_key][k]
+                
+    files = [f for f in os.listdir(sub_dir) if f.lower().endswith('.' + mode.lower())]
+    if not files: raise ValueError(f"输入文件夹中未找到 {mode} 文件！")
+    
+    os.makedirs(out_dir, exist_ok=True)
+    report_data = []
+    
+    for file in files:
+        filepath = os.path.join(sub_dir, file)
+        out_path = os.path.join(out_dir, file)
+        
+        base_name = os.path.splitext(file)[0].strip()
+        file_map = excel_map.get(base_name, {})
+        
+        if mode == "SRT":
+            blocks = parse_srt_file(filepath)
+            
+            key_counts = {}
+            for block in blocks:
+                key = tuple(get_srt_val(block, c) for c in sub_refs)
+                key_counts[key] = key_counts.get(key, 0) + 1
+                
+            out_blocks = []
+            for block in blocks:
+                key = tuple(get_srt_val(block, c) for c in sub_refs)
+                if key_counts.get(key, 0) == 1 and key in file_map:
+                    old_val = get_srt_val(block, sub_tgt)
+                    new_val = file_map[key]
+                    if old_val != new_val:
+                        set_srt_val(block, sub_tgt, new_val)
+                        report_data.append({
+                            "文件名": file, "匹配依据": " | ".join(key),
+                            "替换的列": sub_tgt, "原内容": old_val, "新内容": new_val
+                        })
+                out_blocks.append(f"{block['ID']}\n{block['Timeline']}\n{block['Text']}\n")
+                
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(out_blocks))
+                
+        else: # ASS
+            with open(filepath, 'r', encoding='utf-8-sig') as f:
+                lines = f.read().split('\n')
+                
+            out_lines = []
+            key_counts = {}
+            for line in lines:
+                if line.startswith('Dialogue:'):
+                    parts = line.split(',', 9)
+                    if len(parts) >= 10:
+                        key = tuple(get_ass_val(parts, c) for c in sub_refs)
+                        key_counts[key] = key_counts.get(key, 0) + 1
+                        
+            for line in lines:
+                if line.startswith('Dialogue:'):
+                    parts = line.split(',', 9)
+                    if len(parts) >= 10:
+                        key = tuple(get_ass_val(parts, c) for c in sub_refs)
+                        if key_counts.get(key, 0) == 1 and key in file_map:
+                            old_val = get_ass_val(parts, sub_tgt)
+                            new_val = file_map[key]
+                            if old_val != new_val:
+                                set_ass_val(parts, sub_tgt, new_val)
+                                line = ",".join(parts)
+                                report_data.append({
+                                    "文件名": file, "匹配依据": " | ".join(key),
+                                    "替换的列": sub_tgt, "原内容": old_val, "新内容": new_val
+                                })
+                out_lines.append(line)
+                
+            with open(out_path, 'w', encoding='utf-8') as f:
+                f.write("\n".join(out_lines))
+                
+    if report_data:
+        pd.DataFrame(report_data).to_excel(report_file, index=False)
+        
+    return len(files), len(report_data)
+# ================================================================
+
 def process_zip(target_dir, output_dir, max_files):
     files = sorted([f for f in os.listdir(target_dir) if os.path.isfile(os.path.join(target_dir, f))])
     if not files: raise ValueError("目标文件夹中没有任何文件！")
@@ -3062,6 +3247,57 @@ def run_replace():
         messagebox.showinfo("完成", f"替换完毕！\n共影响了 {file_count} 个 SRT 文件。\n合计成功替换 {rep_count} 条字幕，已生成展示表格。")
     except Exception as e: messagebox.showerror("错误", f"替换失败:\n{str(e)}")
 
+def run_excel_replace():
+    sub_dir = er_sub_dir_var.get().strip()
+    out_dir = er_out_dir_var.get().strip()
+    excel_file = er_excel_var.get().strip()
+    report_file = er_report_var.get().strip()
+    mode = er_mode_var.get()
+    
+    # 新增：获取 Excel 文件名/集数 列
+    excel_file_col = er_excel_file_col_var.get().strip() 
+    
+    excel_refs_str = er_excel_refs_var.get().strip().replace('，', ',')
+    excel_refs = [c.strip() for c in excel_refs_str.split(',') if c.strip()]
+    
+    sub_refs = [c for c in [er_sub_ref1.get(), er_sub_ref2.get(), er_sub_ref3.get()] if c.strip()]
+    
+    excel_tgt = er_excel_tgt_var.get().strip()
+    sub_tgt = er_sub_tgt_var.get().strip()
+    
+    if not all([sub_dir, out_dir, excel_file, report_file, excel_file_col, excel_refs, sub_refs, excel_tgt, sub_tgt]):
+        return messagebox.showwarning("警告", "请完整填写所有的文件路径和列设置！")
+        
+    if len(excel_refs) > 3:
+        return messagebox.showwarning("警告", "Excel 参考列最多只支持选择 3 列！")
+        
+    if len(excel_refs) != len(sub_refs):
+        return messagebox.showwarning("警告", f"对齐失败！Excel参考列填了 {len(excel_refs)} 列，但字幕参考列选了 {len(sub_refs)} 列，两者必须一致！")
+        
+    try:
+        f_count, r_count = process_excel_replace_batch(sub_dir, out_dir, excel_file, report_file, mode,
+                                                       excel_file_col, excel_refs, sub_refs, excel_tgt, sub_tgt)
+        messagebox.showinfo("完成", f"批量替换完毕！\n共遍历处理了 {f_count} 个字幕文件。\n合计成功替换 {r_count} 处内容，替换报告已生成。")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        messagebox.showerror("错误", f"处理失败:\n{str(e)}")
+
+def er_update_cols(*args):
+    """动态联动：根据选中的 SRT/ASS 模式切换下拉框的可用列"""
+    mode = er_mode_var.get()
+    cols = ASS_COLS if mode == "ASS" else SRT_COLS
+    
+    er_cb_ref1['values'] = cols
+    er_cb_ref2['values'] = [""] + cols
+    er_cb_ref3['values'] = [""] + cols
+    er_cb_tgt['values'] = cols
+    
+    if er_sub_ref1.get() not in cols: er_sub_ref1.set(cols[0])
+    if er_sub_ref2.get() not in [""] + cols: er_sub_ref2.set("")
+    if er_sub_ref3.get() not in [""] + cols: er_sub_ref3.set("")
+    if er_sub_tgt_var.get() not in cols: er_sub_tgt_var.set(cols[-1])
+
 def run_zip():
     target_dir, out_dir = zip_target_var.get().strip(), zip_out_var.get().strip()
     if not target_dir or not out_dir: return messagebox.showwarning("警告", "请选择需要打包的文件夹和输出文件夹！")
@@ -3461,6 +3697,87 @@ tab_rep.columnconfigure(1, weight=1)
 current_presets_rep = load_presets(PRESET_FILE_REP, DEFAULT_PRESETS_REP)
 rep_report_var, rep_srt_var, rep_out_var = tk.StringVar(), tk.StringVar(), tk.StringVar()
 rep_cols_var = tk.StringVar(value=current_presets_rep[0] if current_presets_rep else "A, B, E")
+
+# ================= TAB 3.5: Excel 批量替换内容 =================
+tab_er = create_scrollable_tab(nb_srt, " Excel批量替换 ", padding=20)
+tab_er.columnconfigure(1, weight=1)
+
+er_mode_var = tk.StringVar(value="SRT")
+er_sub_dir_var = tk.StringVar()
+er_out_dir_var = tk.StringVar()
+er_excel_var = tk.StringVar()
+er_report_var = tk.StringVar()
+
+er_excel_refs_var = tk.StringVar(value="A")
+er_excel_file_col_var = tk.StringVar(value="A")   # 新增：代表文件名的列，默认设为A
+er_excel_refs_var = tk.StringVar(value="B,C")     # 把原参考列稍微后移，设为B,C做示范
+er_sub_ref1 = tk.StringVar(value="ID")
+er_sub_ref2 = tk.StringVar()
+er_sub_ref3 = tk.StringVar()
+
+er_excel_tgt_var = tk.StringVar(value="B")
+er_sub_tgt_var = tk.StringVar(value="Text")
+
+f_er_mode = ttk.Frame(tab_er)
+f_er_mode.grid(row=0, column=0, columnspan=3, sticky="w", pady=5)
+ttk.Radiobutton(f_er_mode, text="处理 SRT 格式", variable=er_mode_var, value="SRT", command=er_update_cols).pack(side=tk.LEFT, padx=10)
+ttk.Radiobutton(f_er_mode, text="处理 ASS 格式", variable=er_mode_var, value="ASS", command=er_update_cols).pack(side=tk.LEFT, padx=10)
+
+ttk.Label(tab_er, text="输入字幕文件夹:").grid(row=1, column=0, sticky="e", pady=10, padx=(0,10))
+DnDEntry(tab_er, textvariable=er_sub_dir_var).grid(row=1, column=1, sticky="ew", padx=5)
+ttk.Button(tab_er, text="浏览...", command=lambda: ask_dir(er_sub_dir_var, "选择字幕目录")).grid(row=1, column=2, padx=5)
+
+ttk.Label(tab_er, text="输入参考 Excel 文件:").grid(row=2, column=0, sticky="e", pady=10, padx=(0,10))
+DnDEntry(tab_er, textvariable=er_excel_var).grid(row=2, column=1, sticky="ew", padx=5)
+ttk.Button(tab_er, text="浏览...", command=lambda: ask_file(er_excel_var, "选择Excel", [("Excel", "*.xlsx;*.xls")])).grid(row=2, column=2, padx=5)
+
+f_er_refs = ttk.LabelFrame(tab_er, text="查找与匹配条件 (两侧列数必须一致，如果无法唯一定位则跳过)", padding=10)
+f_er_refs.grid(row=3, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
+f_er_refs.columnconfigure(1, weight=1)
+
+# 新增：集数列输入框，放在第 0 行
+ttk.Label(f_er_refs, text="Excel 集数列 (对应字幕文件名，如 A):").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+ttk.Entry(f_er_refs, textvariable=er_excel_file_col_var, width=15).grid(row=0, column=1, sticky="w", padx=5)
+
+# 下方的元素依次往下推一行 (row=1 到 row=4)
+ttk.Label(f_er_refs, text="Excel 参考列 (最多3列，用逗号分隔，如 B,C):").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+ttk.Entry(f_er_refs, textvariable=er_excel_refs_var, width=15).grid(row=1, column=1, sticky="w", padx=5)
+
+ttk.Label(f_er_refs, text="字幕 参考列 1:").grid(row=2, column=0, sticky="e", padx=5, pady=5)
+er_cb_ref1 = ttk.Combobox(f_er_refs, textvariable=er_sub_ref1, width=15, state="readonly")
+er_cb_ref1.grid(row=2, column=1, sticky="w", padx=5)
+
+ttk.Label(f_er_refs, text="字幕 参考列 2:").grid(row=3, column=0, sticky="e", padx=5, pady=5)
+er_cb_ref2 = ttk.Combobox(f_er_refs, textvariable=er_sub_ref2, width=15, state="readonly")
+er_cb_ref2.grid(row=3, column=1, sticky="w", padx=5)
+
+ttk.Label(f_er_refs, text="字幕 参考列 3:").grid(row=4, column=0, sticky="e", padx=5, pady=5)
+er_cb_ref3 = ttk.Combobox(f_er_refs, textvariable=er_sub_ref3, width=15, state="readonly")
+er_cb_ref3.grid(row=4, column=1, sticky="w", padx=5)
+
+f_er_tgt = ttk.LabelFrame(tab_er, text="替换目标", padding=10)
+f_er_tgt.grid(row=4, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
+f_er_tgt.columnconfigure(1, weight=1)
+
+ttk.Label(f_er_tgt, text="Excel 来源列 (选1列，如 D):").grid(row=0, column=0, sticky="e", padx=5, pady=5)
+ttk.Entry(f_er_tgt, textvariable=er_excel_tgt_var, width=10).grid(row=0, column=1, sticky="w", padx=5)
+
+ttk.Label(f_er_tgt, text="字幕 目标列 (该列的内容将被覆盖):").grid(row=1, column=0, sticky="e", padx=5, pady=5)
+er_cb_tgt = ttk.Combobox(f_er_tgt, textvariable=er_sub_tgt_var, width=15, state="readonly")
+er_cb_tgt.grid(row=1, column=1, sticky="w", padx=5)
+
+ttk.Label(tab_er, text="输出字幕文件夹:").grid(row=5, column=0, sticky="e", pady=10, padx=(0,10))
+DnDEntry(tab_er, textvariable=er_out_dir_var).grid(row=5, column=1, sticky="ew", padx=5)
+ttk.Button(tab_er, text="浏览...", command=lambda: ask_dir(er_out_dir_var, "选择目录")).grid(row=5, column=2, padx=5)
+
+ttk.Label(tab_er, text="输出替换报告(Excel):").grid(row=6, column=0, sticky="e", pady=10, padx=(0,10))
+DnDEntry(tab_er, textvariable=er_report_var).grid(row=6, column=1, sticky="ew", padx=5)
+ttk.Button(tab_er, text="另存为...", command=lambda: ask_save_file(er_report_var, "保存报告", [("Excel", "*.xlsx")], ".xlsx")).grid(row=6, column=2, padx=5)
+
+ttk.Button(tab_er, text="▶ 开始遍历并批量替换", command=run_excel_replace, style='TButton').grid(row=7, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
+
+# 初始化激活下拉框的默认数据
+er_update_cols()
 
 # ====== 新增：匹配模式变量 ======
 rep_match_mode_var = tk.IntVar(value=0)
