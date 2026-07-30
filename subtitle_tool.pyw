@@ -1431,8 +1431,409 @@ Fix spelling, grammar, unidiomatic expressions in `t` to ensure accurate localiz
         result_data = json.loads(clean_content.strip()).get("result", [])
         self.log(f"  ✅ 成功接收 {len(result_data)} 行数据。")
         
-        return result_data
+        return result_data# ================= 新增：字幕对比分析核心类 =================
     
+class Subtitle_Compare_App:
+    def __init__(self, parent_frame, lqa_instance):
+        self.parent = parent_frame
+        self.lqa = lqa_instance  # 借用 LQA 实例中的 API Key 和 Token 估算器
+        
+        self.dir_a = tk.StringVar()
+        self.dir_b = tk.StringVar()
+        self.out_path = tk.StringVar()
+        self.stop_flag = False
+        self.total_tokens_used = 0
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        self.scrollable_frame = self.parent
+        
+        # --- 1. 文件设置区 ---
+        f_file = ttk.LabelFrame(self.scrollable_frame, text="1. 文件设置 (基于同名 .srt 文件匹配)", padding=10)
+        f_file.pack(fill="x", padx=10, pady=5)
+        f_file.columnconfigure(1, weight=1)
+        
+        ttk.Label(f_file, text="字幕 A 文件夹 (基准库：AI提取/内容准但时间散):").grid(row=0, column=0, sticky="e", pady=5)
+        DnDEntry(f_file, textvariable=self.dir_a, width=50).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览...", command=lambda: self.dir_a.set(filedialog.askdirectory())).grid(row=0, column=2)
+        
+        ttk.Label(f_file, text="字幕 B 文件夹 (被审阅：人工修轴/时间准但内容错):").grid(row=1, column=0, sticky="e", pady=5)
+        DnDEntry(f_file, textvariable=self.dir_b, width=50).grid(row=1, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览...", command=lambda: self.dir_b.set(filedialog.askdirectory())).grid(row=1, column=2)
+        
+        ttk.Label(f_file, text="输出 Excel 挑错报告路径:").grid(row=2, column=0, sticky="e", pady=5)
+        DnDEntry(f_file, textvariable=self.out_path, width=50).grid(row=2, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="另存为...", command=lambda: self.out_path.set(filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")]))).grid(row=2, column=2)
+        
+        # --- 2. API 参数区 ---
+        f_api = ttk.LabelFrame(self.scrollable_frame, text="2. API 及分块算法设置 (接口与Key自动共用LQA配置)", padding=10)
+        f_api.pack(fill="x", padx=10, pady=5)
+        
+        ttk.Label(f_api, text="选择模型:").grid(row=0, column=0, sticky="e")
+        self.model_box = ttk.Combobox(f_api, values=list(ENGINES_MAP.keys()), width=20, state="readonly")
+        self.model_box.current(0)
+        self.model_box.grid(row=0, column=1, padx=5, sticky="w")
+        
+        ttk.Label(f_api, text="分块 Token 上限:").grid(row=0, column=2, sticky="e", padx=(20, 5))
+        self.token_limit = ttk.Entry(f_api, width=8)
+        self.token_limit.insert(0, "1500")
+        self.token_limit.grid(row=0, column=3, sticky="w")
+        
+        ttk.Label(f_api, text="上下文扩充(ms):").grid(row=0, column=4, sticky="e", padx=(20, 5))
+        self.time_buffer = ttk.Entry(f_api, width=8)
+        self.time_buffer.insert(0, "5000")
+        self.time_buffer.grid(row=0, column=5, sticky="w")
+        ttk.Label(f_api, text="(切分发送时，额外向基准A库借调前后5秒文本防断句)").grid(row=0, column=6, sticky="w", padx=5)
+
+        # --- 3. 性能与并发设置区 ---
+        f_perf = ttk.LabelFrame(self.scrollable_frame, text="3. 性能与并发设置", padding=10)
+        f_perf.pack(fill="x", padx=10, pady=5)
+        
+        self.use_multithread_var = tk.BooleanVar(value=False)
+        self.thread_count_var = tk.IntVar(value=3)
+        self.retry_count_var = tk.IntVar(value=3)
+        
+        ttk.Checkbutton(f_perf, text="开启多文件并发", variable=self.use_multithread_var).grid(row=0, column=0, sticky="w")
+        ttk.Label(f_perf, text="并发文件数:").grid(row=0, column=1, sticky="w", padx=(15, 2))
+        ttk.Spinbox(f_perf, from_=1, to=20, textvariable=self.thread_count_var, width=4).grid(row=0, column=2, sticky="w")
+        ttk.Label(f_perf, text="网络失败重试次数:").grid(row=0, column=3, sticky="w", padx=(15, 2))
+        ttk.Spinbox(f_perf, from_=0, to=10, textvariable=self.retry_count_var, width=4).grid(row=0, column=4, sticky="w")
+        
+        # --- 4. 日志与操作区 ---
+        f_act = tk.Frame(self.scrollable_frame)
+        f_act.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        self.var_stats = tk.StringVar(value="准备就绪")
+        ttk.Label(f_act, textvariable=self.var_stats, font=("Arial", 10, "bold")).pack(pady=(0, 5))
+        
+        btn_f = tk.Frame(f_act)
+        btn_f.pack(pady=5)
+        self.btn_start = ttk.Button(btn_f, text="🚀 开始交叉对比", command=self.start)
+        self.btn_start.pack(side="left", padx=10)
+        self.btn_stop = ttk.Button(btn_f, text="🛑 停止", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=10)
+        
+        self.log_area = scrolledtext.ScrolledText(f_act, width=85, height=20, state='disabled')
+        self.log_area.pack(fill="both", expand=True)
+        
+    def log(self, msg):
+        self.parent.after(0, self._log, msg)
+        
+    def _log(self, msg):
+        self.log_area.config(state='normal')
+        self.log_area.insert(tk.END, msg + "\n")
+        self.log_area.see(tk.END)
+        self.log_area.config(state='disabled')
+        
+    def stop(self):
+        self.stop_flag = True
+        self.btn_stop.config(state="disabled")
+        self.log("⚠️ 已触发停止指令，等待当前批次请求完成后安全退出...")
+        
+    def start(self):
+        if not self.dir_a.get() or not self.dir_b.get() or not self.out_path.get():
+            return messagebox.showwarning("警告", "请完整填写输入输出路径！")
+        
+        api_endpoint = self.lqa.api_endpoint.get().strip()
+        api_key = self.lqa.api_key.get().strip()
+        if not api_endpoint or not api_key:
+            return messagebox.showerror("错误", "请先在上方【LQA 拼写检查】标签页中配置并保存 API 接口信息！")
+            
+        self.stop_flag = False
+        self.total_tokens_used = 0
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.log_area.config(state='normal')
+        self.log_area.delete(1.0, tk.END)
+        self.log_area.config(state='disabled')
+        
+        threading.Thread(target=self.worker, daemon=True).start()
+        
+    def apply_markup_rich_text(self, marked_text):
+        """将 AI 返回的 **错词** 解析为 Excel 红色高亮富文本"""
+        if not RICH_TEXT_SUPPORTED or not marked_text: return marked_text
+        red_bold = InlineFont(color="FFFF0000", b=True)
+        black_font = InlineFont(color="FF000000", b=False)
+        
+        # 兼容 ** 和 <> 两种包裹模式
+        if '<' in marked_text and '>' in marked_text and '**' not in marked_text:
+            parts = re.split(r'(<.*?>)', marked_text)
+        else:
+            parts = re.split(r'(\*\*.*?\*\*)', marked_text)
+            
+        new_blocks = []
+        for part in parts:
+            if not part: continue
+            if (part.startswith('**') and part.endswith('**')) or (part.startswith('<') and part.endswith('>')):
+                inner_txt = part[2:-2] if part.startswith('**') else part[1:-1]
+                new_blocks.append(TextBlock(font=red_bold, text=inner_txt))
+            else:
+                new_blocks.append(TextBlock(font=black_font, text=part))
+                
+        if not new_blocks: return marked_text
+        return CellRichText(*new_blocks)
+        
+    def parse_time_to_ms(self, t_str):
+        try:
+            t_str = t_str.replace(',', '.').strip()
+            if '-->' in t_str: t_str = t_str.split('-->')[0].strip()
+            h, m, s_ms = t_str.split(':')
+            s, ms = s_ms.split('.')
+            return (int(h) * 3600 + int(m) * 60 + int(s)) * 1000 + int(ms.ljust(3, '0')[:3])
+        except: return 0
+
+    def _send_batch_request(self, client, ui_model, deployment, sys_prompt, payload_dict):
+        # 1. 安全提取起止ID用于日志展示
+        target_subs = payload_dict.get("Target Subtitles", [])
+        if target_subs:
+            st_id = target_subs[0].get('id', '未知')
+            ed_id = target_subs[-1].get('id', '未知')
+        else:
+            st_id, ed_id = "未知", "未知"
+            
+        self.log(f"\n  -> [API通信] 准备发送请求... [字幕B 行号: {st_id} 至 {ed_id}] (部署引擎: {deployment})")
+        
+        user_prompt = json.dumps(payload_dict, ensure_ascii=False)
+        self.log(f"  -> [API通信] 发送载荷(Payload)大小: {len(user_prompt)} 字符，正在等待服务器响应...")
+        
+        # === 核心修改：动态适应各种大模型的 Temperature 和 JSON 要求 ===
+        target_temperature = 0.2
+        json_resp = True
+        
+        if '4o' not in ui_model and '4.1' not in ui_model:
+            target_temperature = 1.0
+            
+        if 'o1' in ui_model or 'o3' in ui_model or 'o4' in ui_model:
+            json_resp = False
+
+        req_kwargs = {
+            "model": deployment,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": target_temperature
+        }
+        
+        if json_resp:
+            req_kwargs["response_format"] = {"type": "json_object"}
+        # ========================================================
+            
+        # 2. 捕获网络请求级别的错误
+        try:
+            response = client.chat.completions.create(**req_kwargs)
+            self.log(f"  <- [API通信] 成功接收到服务器返回流！")
+        except Exception as api_e:
+            self.log(f"  ❌ [API网络报错] 请求被拒绝或超时: {str(api_e)}")
+            raise api_e
+            
+        if hasattr(response, 'usage') and response.usage:
+            used = response.usage.total_tokens
+            self.total_tokens_used += used
+            self.log(f"  [API计量] 本次消耗: {used} tokens | 累计消耗: {self.total_tokens_used} tokens")
+            
+        content = response.choices[0].message.content.strip()
+        self.log(f"  <- [API内容] 收到原始文本长度: {len(content)} 字符")
+        # 打印返回内容的前150个字符用于排查 AI 是否在胡言乱语
+        self.log(f"  <- [API内容] 原始返回片段预览: {content[:150]}...")
+        
+        # 3. 清洗 Markdown 标记
+        clean_content = content
+        if clean_content.startswith("```json"): clean_content = clean_content[7:]
+        elif clean_content.startswith("```"): clean_content = clean_content[3:]
+        if clean_content.endswith("```"): clean_content = clean_content[:-3]
+        clean_content = clean_content.strip()
+        
+        # 4. 捕获 JSON 解析级别的错误
+        try:
+            parsed_json = json.loads(clean_content)
+            result_list = parsed_json.get("result", [])
+            self.log(f"  ✅ [解析成功] 成功从 JSON 中解析出 {len(result_list)} 条修改建议。")
+            return result_list
+        except Exception as json_e:
+            self.log(f"  ❌ [JSON解析失败] AI 返回的数据格式不合法: {str(json_e)}")
+            self.log(f"  ❌ [引发错误的完整脏数据]:\n{clean_content}")
+            return []
+        
+    def worker(self):
+        import time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        try:
+            client = AzureOpenAI(
+                azure_endpoint=self.lqa.api_endpoint.get().strip(),
+                api_key=self.lqa.api_key.get().strip(),
+                api_version=DEFAULT_API_VERSION
+            )
+            
+            ui_model = self.model_box.get()
+            model_name = ENGINES_MAP.get(ui_model, ui_model)
+            t_limit = int(self.token_limit.get())
+            buf_ms = int(self.time_buffer.get())
+            
+            dir_a = self.dir_a.get()
+            dir_b = self.dir_b.get()
+            
+            max_threads = self.thread_count_var.get() if self.use_multithread_var.get() else 1
+            max_retries = self.retry_count_var.get()
+            
+            files_a = {f.lower(): f for f in os.listdir(dir_a) if f.endswith('.srt')}
+            files_b = {f.lower(): f for f in os.listdir(dir_b) if f.endswith('.srt')}
+            
+            common_keys = list(set(files_a.keys()).intersection(set(files_b.keys())))
+            if not common_keys:
+                self.log("❌ 错误：两边文件夹中没有找到同名的 SRT 文件，请检查！")
+                return
+                
+            report_data = []
+            report_lock = threading.Lock()
+            total_files = len(common_keys)
+            
+            # --- 优化版系统提示词：严打同音词误报，信任人类语境 ---
+            sys_prompt = '''# System Role:
+You are an expert subtitle proofreader.
+# Task:
+Compare "Target Subtitles" (human-transcribed, excellent logical context but prone to missing/extra words) against "Reference Text" (AI-transcribed, acoustically accurate but severely prone to homophone/phonetic errors).
+# Rules:
+1. Identify obvious human transcription errors in Target Subtitles: missing words (漏词), extra words (多词), or completely wrong words (错词) that disrupt the meaning.
+2. CRITICAL CONSTRAINT: Ignore homophone/phonetic differences! Do NOT blindly trust the Reference Text. If Target Subtitles differ phonetically but make perfect contextual sense, YOU MUST ASSUME THE TARGET IS CORRECT. Only report errors if the Target text lacks vital information or breaks logical flow.
+3. For lines with genuine errors, output the fixed text in `marked_text`, using ** ** to wrap the modifications.
+4. Provide a concise "issue" description (e.g., "漏词", "多词", "明显错词").
+5. ONLY return a valid minified JSON array under the key "result". Exclude any lines that are logically correct.
+# Output Format Example:
+{"result": [{"id": "1", "marked_text": "How **are** you", "issue": "漏词"}]}'''
+
+            def process_file(idx_f, f_key):
+                if self.stop_flag: return
+                file_a, file_b = files_a[f_key], files_b[f_key]
+                self.parent.after(0, lambda c=idx_f+1, t=total_files: self.var_stats.set(f"正在处理第 {c}/{t} 个文件..."))
+                self.log(f"\n====== 正在对比: {file_b} ======")
+                
+                blocks_a = parse_srt_file(os.path.join(dir_a, file_a))
+                blocks_b = parse_srt_file(os.path.join(dir_b, file_b))
+                
+                # 预处理 A 的时间戳，方便后续时间窗查找
+                for a in blocks_a:
+                    ts = a['Timeline'].split(' --> ')
+                    a['st'] = self.parse_time_to_ms(ts[0])
+                    a['ed'] = self.parse_time_to_ms(ts[1]) if len(ts)>1 else a['st']+2000
+                    
+                current_batch = []
+                current_tok = 0
+                file_report_data = []
+                
+                def process_batch(batch):
+                    if not batch: return
+                    st_b = self.parse_time_to_ms(batch[0]['Timeline'].split(' --> ')[0])
+                    ed_b_str = batch[-1]['Timeline'].split(' --> ')[1] if '-->' in batch[-1]['Timeline'] else batch[-1]['Timeline']
+                    ed_b = self.parse_time_to_ms(ed_b_str)
+                    
+                    ref_texts = []
+                    for a in blocks_a:
+                        if a['ed'] >= st_b - buf_ms and a['st'] <= ed_b + buf_ms:
+                            ref_texts.append(a['Text'].replace('\n', ' '))
+                    ref_str = " ".join(ref_texts)
+                    
+                    target_payload = [{"id": b['ID'], "text": b['Text'].replace('\n', ' ')} for b in batch]
+                    payload_dict = {"Reference Text": ref_str, "Target Subtitles": target_payload}
+                    
+                    self.log(f"  [数据组装] ({file_b}) 截取到基准字幕A共 {len(ref_str)} 字符, 包含字幕B共 {len(target_payload)} 行。")
+                    
+                    for attempt in range(max_retries + 1):
+                        try:
+                            res_data = self._send_batch_request(client, ui_model, model_name, sys_prompt, payload_dict)
+                            
+                            batch_dict = {b['ID']: b for b in batch}
+                            for r in res_data:
+                                b_id = str(r.get("id"))
+                                if b_id in batch_dict:
+                                    orig_b = batch_dict[b_id]
+                                    file_report_data.append({
+                                        "文件名": file_b,
+                                        "集数": os.path.splitext(file_b)[0],
+                                        "时间轴": orig_b['Timeline'],
+                                        "原始字幕(B)": orig_b['Text'],
+                                        "修改标记(B)": r.get("marked_text", ""),
+                                        "问题描述": r.get("issue", "")
+                                    })
+                            break # 成功则跳出重试循环
+                        except Exception as parse_e:
+                            if attempt < max_retries:
+                                self.log(f"  ⚠️ [网络异常] ({file_b}) 2秒后进行第 {attempt + 1}/{max_retries} 次重试... ({str(parse_e)})")
+                                time.sleep(2)
+                            else:
+                                self.log(f"  ❌ [彻底失败] ({file_b}) 重试耗尽，跳过该批次: {str(parse_e)}")
+
+                for b in blocks_b:
+                    if self.stop_flag: break
+                    tok = self.lqa.estimate_tokens(json.dumps({"id": b['ID'], "text": b['Text']}, ensure_ascii=False))
+                    
+                    if current_tok + tok + 500 > t_limit and current_batch:
+                        process_batch(current_batch)
+                        current_batch = []
+                        current_tok = 0
+                        
+                    current_batch.append(b)
+                    current_tok += tok
+                    
+                if current_batch and not self.stop_flag:
+                    process_batch(current_batch)
+                    
+                with report_lock:
+                    report_data.extend(file_report_data)
+                    
+            # --- 调度多线程或单线程处理 ---
+            if self.use_multithread_var.get():
+                self.log(f"\n🚀 已开启多文件并发模式，分配并发数: {max_threads}")
+                with ThreadPoolExecutor(max_workers=max_threads) as executor:
+                    futures = [executor.submit(process_file, i, k) for i, k in enumerate(common_keys)]
+                    for future in as_completed(futures):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            self.log(f"❌ 线程执行奔溃: {e}")
+            else:
+                for i, k in enumerate(common_keys):
+                    process_file(i, k)
+                    
+            # 报告输出与着色逻辑
+            if report_data and not self.stop_flag:
+                self.log("\n正在生成高亮富文本 Excel 报告...")
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                headers = ["文件名", "集数", "时间轴", "原始字幕 (B)", "修改标记后 (B)", "问题描述"]
+                ws.append(headers)
+                
+                for row_dict in report_data:
+                    row = [
+                        row_dict["文件名"], row_dict["集数"], row_dict["时间轴"], 
+                        row_dict["原始字幕(B)"], self.apply_markup_rich_text(row_dict["修改标记(B)"]), 
+                        row_dict["问题描述"]
+                    ]
+                    ws.append(["" for _ in row])
+                    r_idx = ws.max_row
+                    for c_idx, val in enumerate(row, 1):
+                        cell = ws.cell(row=r_idx, column=c_idx)
+                        if isinstance(val, CellRichText): cell.value = val
+                        else: cell.value = val
+                        
+                wb.save(self.out_path.get())
+                self.log(f"🎉 处理完成！报告已保存至:\n{self.out_path.get()}")
+                self.parent.after(0, lambda: messagebox.showinfo("完成", f"分析完成！共发现 {len(report_data)} 处差异。"))
+            else:
+                if not self.stop_flag:
+                    self.log("\n✅ 处理完成！未发现任何需要纠正的差异。")
+                    self.parent.after(0, lambda: messagebox.showinfo("完成", "对比完成，完美贴合，未发现任何错漏。"))
+                
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.log(f"❌ 发生致命错误: {str(e)}")
+            self.parent.after(0, lambda: messagebox.showerror("错误", f"发生致命错误:\n{str(e)}"))
+        finally:
+            self.parent.after(0, lambda: self.btn_start.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
+            self.parent.after(0, lambda: self.var_stats.set("任务已结束" if not self.stop_flag else "已被用户终止"))
 
 # ======= 新增：用于术语检查报告的富文本导出 =======
 try:
@@ -7075,6 +7476,11 @@ trans_is_running = tk.BooleanVar(value=False)
 
 # === 新增：是否保留源语言的变量 ===
 trans_keep_source = tk.IntVar(value=0)
+
+# ================= TAB 16: 字幕对比分析 =================
+tab_compare = create_scrollable_tab(nb_other, " 🔍 字幕对比分析 ", padding=10)
+# 实例化对比分析工具，并将刚才初始化的 lqa_tool_instance 传进去“白嫖”API环境
+compare_tool_instance = Subtitle_Compare_App(tab_compare, lqa_tool_instance)
 
 def stop_xlsx_translation():
     if trans_is_running.get():

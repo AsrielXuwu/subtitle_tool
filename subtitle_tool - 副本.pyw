@@ -2948,6 +2948,77 @@ def process_merge_srt_to_ass_batch(norm_dir, scr_dir, out_dir, custom_style_dict
             
     return len(all_files)
 
+def process_ass_inline_split(in_dir, out_dir, regex_pat):
+    """仅在文件内根据正则拆分字幕行为多行，保持其他属性不变，支持 >>> 替换"""
+    files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
+    if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
+    
+    os.makedirs(out_dir, exist_ok=True)
+    
+    # === 新增：解析是否包含 >>> 替换规则 ===
+    regex_pat_clean = regex_pat.strip('\r\n')
+    if '>>>' in regex_pat_clean:
+        pat, repl = regex_pat_clean.split('>>>', 1)
+        if pat.endswith(' '): pat = pat[:-1]
+        if repl.startswith(' '): repl = repl[1:]
+        # 兼容用户习惯的 $1 转为 Python 的 \1
+        repl_python = re.sub(r'\$(\d+)', r'\\\1', repl)
+    else:
+        pat = regex_pat_clean
+        repl_python = None
+    # ======================================
+
+    processed_count = 0
+    for file in files:
+        filepath = os.path.join(in_dir, file)
+        with open(filepath, 'r', encoding='utf-8-sig') as f:
+            lines = f.read().split('\n')
+            
+        out_lines = []
+        for line in lines:
+            if line.startswith('Dialogue:'):
+                parts = line.split(',', 9)
+                if len(parts) >= 10:
+                    txt = parts[9]
+                    try:
+                        # 查找正则匹配内容
+                        match = re.search(pat, txt)
+                        if match:
+                            m_str = match.group(0)
+                            # 提取剩余内容
+                            before = txt[:match.start()].strip()
+                            after = txt[match.end():].strip()
+                            
+                            # 1. 如果有替换规则，对拆出来的这部分进行正则替换
+                            if repl_python is not None:
+                                m_str = re.sub(pat, repl_python, m_str)
+                                
+                            # 2. 拷贝原属性，把处理后的匹配内容输出为独立的一行
+                            p1 = list(parts)
+                            p1[9] = m_str
+                            out_lines.append(",".join(p1))
+                            
+                            # 3. 拷贝原属性，把剩下的文本输出为独立的一行
+                            remain_str = before + (" " if before and after else "") + after
+                            if remain_str:
+                                p2 = list(parts)
+                                p2[9] = remain_str
+                                out_lines.append(",".join(p2))
+                        else:
+                            out_lines.append(line)
+                    except Exception as e:
+                        out_lines.append(line)
+                else:
+                    out_lines.append(line)
+            else:
+                out_lines.append(line)
+                
+        with open(os.path.join(out_dir, file), 'w', encoding='utf-8-sig') as f:
+            f.write("\n".join(out_lines))
+        processed_count += 1
+        
+    return processed_count
+
 def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, to_srt=False):
     """根据组合条件将 ASS 拆分为画面字和普通字两个文件"""
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
@@ -3461,6 +3532,23 @@ def run_ass_split():
     o_s = split_ass_out_scr_var.get().strip()
     o_n = split_ass_out_norm_var.get().strip()
     
+    # === 新增：文件内单行拆分拦截逻辑 ===
+    is_inline = split_ass_inline_var.get() == 1
+    inline_regex = split_ass_inline_regex_var.get().strip()
+    
+    if is_inline:
+        if not i_d or not o_n: 
+            return messagebox.showwarning("警告", "请完整选择输入和【普通字 ASS】输出文件夹！\n(单文件拆分结果将输出至【普通字 ASS】设置的目录中)")
+        if not inline_regex: 
+            return messagebox.showwarning("警告", "请输入拆分正则表达式！")
+        try:
+            count = process_ass_inline_split(i_d, o_n, inline_regex)
+            messagebox.showinfo("完成", f"拆分成功！\n共处理了 {count} 个 ASS 文件，已在文件内将匹配内容拆分为独立行。")
+        except Exception as e: 
+            messagebox.showerror("错误", f"拆分失败:\n{str(e)}")
+        return
+    # ==================================
+
     if not i_d or not o_s or not o_n: return messagebox.showwarning("警告", "请完整选择输入和两个输出文件夹！")
         
     logic_mode = split_ass_logic_var.get()
@@ -6322,6 +6410,10 @@ tab_ass_split.columnconfigure(1, weight=1)
 split_ass_in_var = tk.StringVar()
 split_ass_out_scr_var, split_ass_out_norm_var = tk.StringVar(), tk.StringVar()
 
+# === 变量初始化 ===
+split_ass_inline_var = tk.IntVar(value=0)
+split_ass_inline_regex_var = tk.StringVar(value=r"\(([\S\s]*)\)")
+
 ttk.Label(tab_ass_split, text="ASS 输入文件夹:").grid(row=0, column=0, sticky="e", pady=5, padx=5)
 DnDEntry(tab_ass_split, textvariable=split_ass_in_var).grid(row=0, column=1, sticky="ew", padx=5)
 f_split_in_btns = ttk.Frame(tab_ass_split)
@@ -6329,23 +6421,57 @@ f_split_in_btns.grid(row=0, column=2, sticky="w", padx=5)
 ttk.Button(f_split_in_btns, text="浏览...", command=lambda: ask_dir(split_ass_in_var, "选择目录")).pack(side=tk.LEFT)
 
 ttk.Label(tab_ass_split, text="画面字 ASS 存至:").grid(row=1, column=0, sticky="e", pady=5, padx=5)
-DnDEntry(tab_ass_split, textvariable=split_ass_out_scr_var).grid(row=1, column=1, sticky="ew", padx=5)
-ttk.Button(tab_ass_split, text="浏览...", command=lambda: ask_dir(split_ass_out_scr_var, "选择目录")).grid(row=1, column=2, sticky="w", padx=5)
+en_out_scr = DnDEntry(tab_ass_split, textvariable=split_ass_out_scr_var)
+en_out_scr.grid(row=1, column=1, sticky="ew", padx=5)
+btn_out_scr = ttk.Button(tab_ass_split, text="浏览...", command=lambda: ask_dir(split_ass_out_scr_var, "选择目录"))
+btn_out_scr.grid(row=1, column=2, sticky="w", padx=5)
 
 ttk.Label(tab_ass_split, text="普通字 ASS 存至:").grid(row=2, column=0, sticky="e", pady=5, padx=5)
 DnDEntry(tab_ass_split, textvariable=split_ass_out_norm_var).grid(row=2, column=1, sticky="ew", padx=5)
 ttk.Button(tab_ass_split, text="浏览...", command=lambda: ask_dir(split_ass_out_norm_var, "选择目录")).grid(row=2, column=2, sticky="w", padx=5)
 
-# 完美复用高级判定组件
+# === 新增：单文件内拆分 UI ===
+f_inline = ttk.LabelFrame(tab_ass_split, text="单文件内拆分模式", padding=10)
+f_inline.grid(row=3, column=0, columnspan=3, sticky="ew", pady=5, padx=5)
+f_inline.columnconfigure(2, weight=1)
+
+def recursive_toggle_state(widget, state):
+    try: widget.config(state=state)
+    except: pass
+    for child in widget.winfo_children():
+        recursive_toggle_state(child, state)
+
+def update_split_ass_ui():
+    if split_ass_inline_var.get() == 1:
+        # 禁用双文件相关 UI
+        en_out_scr.config(state="disabled")
+        btn_out_scr.config(state="disabled")
+        recursive_toggle_state(f_split_cond, "disabled")
+        cb_to_srt.config(state="disabled")
+        en_inline_regex.config(state="normal")
+    else:
+        # 恢复双文件相关 UI
+        en_out_scr.config(state="normal")
+        btn_out_scr.config(state="normal")
+        recursive_toggle_state(f_split_cond, "normal")
+        cb_to_srt.config(state="normal")
+        en_inline_regex.config(state="disabled")
+
+ttk.Checkbutton(f_inline, text="仅在文件内拆分 (选中后禁用下方选项，且一律输出到【普通字ASS存至】中)", variable=split_ass_inline_var, command=update_split_ass_ui).grid(row=0, column=0, sticky="w", padx=5)
+ttk.Label(f_inline, text="提取/替换正则:").grid(row=0, column=1, sticky="w", padx=(20, 5))
+en_inline_regex = ttk.Entry(f_inline, textvariable=split_ass_inline_regex_var, width=20, state="disabled")
+en_inline_regex.grid(row=0, column=2, sticky="ew")
+
+# 完美复用高级判定组件 (注意：行号变为了 4)
 f_split_cond, split_ass_logic_var, split_ass_c1_var, split_ass_bracket_var, split_ass_c2_var, lb_split_effs, split_ass_c3_var, lb_split_styles = build_advanced_condition_ui(tab_ass_split, split_ass_in_var, "拆分判定条件 (组合判定为画面字，其余为普通字)")
-f_split_cond.grid(row=3, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
+f_split_cond.grid(row=4, column=0, columnspan=3, sticky="ew", pady=10, padx=5)
 
-# 新增：保存为 SRT 的勾选选项
+# 新增：保存为 SRT 的勾选选项 (注意：行号变为了 5)
 split_ass_to_srt_var = tk.IntVar(value=0)
+cb_to_srt = ttk.Checkbutton(tab_ass_split, text="拆分后自动剥离特效与样式，直接转为标准 SRT 格式保存", variable=split_ass_to_srt_var)
+cb_to_srt.grid(row=5, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 0))
 
-ttk.Checkbutton(tab_ass_split, text="拆分后自动剥离特效与样式，直接转为标准 SRT 格式保存", variable=split_ass_to_srt_var).grid(row=4, column=0, columnspan=3, sticky="w", padx=10, pady=(5, 0))
-
-ttk.Button(tab_ass_split, text="▶ 开始拆分 ASS", command=run_ass_split, style='TButton').grid(row=5, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
+ttk.Button(tab_ass_split, text="▶ 开始拆分 ASS", command=run_ass_split, style='TButton').grid(row=6, column=0, columnspan=3, pady=10, ipadx=20, ipady=5)
 
 # ================= TAB 11: ASS 样式预设提取 =================
 tab_ext = ttk.Frame(nb_ass, padding=20)
