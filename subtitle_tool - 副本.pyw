@@ -752,33 +752,66 @@ Fix spelling, grammar, unidiomatic expressions in `t` to ensure accurate localiz
         return sys_prompt
     
     def get_rich_text_diff(self, old_text, new_text):
-        # 如果没有变动，直接返回两个纯文本
+        """核心比对引擎：逐单词/逐字对比新旧文本，生成双向高亮富文本"""
+        if not RICH_TEXT_SUPPORTED:
+            return old_text, new_text
         if old_text == new_text:
             return old_text, new_text
 
-        blue_font = InlineFont(color="0000FF") # 原始译文的变动用蓝色
-        red_font = InlineFont(color="FF0000")  # 修改后的变动用红色
-        
-        # 【核心修复1】：显式定义黑色无加粗字体，彻底切断 Excel 颜色溢出
-        default_font = InlineFont(color="000000", b=False) 
-        
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.cell.rich_text import TextBlock, CellRichText
+        import difflib
+        import re
+
+        # 定义 Beyond Compare 风格的对比样式
+        blue_strike = InlineFont(color="FF0000FF", strike=True)  # 原文被删减的内容：蓝色 + 删除线
+        red_bold = InlineFont(color="FFFF0000", b=True)          # 修改后新增/替换的内容：红色 + 加粗
+        default_font = InlineFont(color="FF000000", b=False)     # 无修改的普通文本：黑色
+
+        # === 智能分词器：英文/数字按完整单词切分，空白保留，中文/标点按单字切分 ===
+        def tokenize(text):
+            # [a-zA-Z0-9_]+ 匹配完整的英文单词和数字
+            # \s+ 匹配连续的空格或换行
+            # . 匹配任何其他单个字符（如中文字符、标点符号）
+            return re.findall(r'[a-zA-Z0-9_]+|\s+|.', text)
+            
+        # 将传入的纯文本转换为 Token 列表
+        old_tokens = tokenize(old_text)
+        new_tokens = tokenize(new_text)
+
         rich_old = CellRichText()
         rich_new = CellRichText()
+
+        # 传入 List 而不是 String，强制 difflib 进行 Token 级（单词级）的比对
+        matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens)
         
-        matcher = difflib.SequenceMatcher(None, old_text, new_text)
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            # 将切分好的 Token 重新无损拼装回片段
+            old_segment = "".join(old_tokens[i1:i2])
+            new_segment = "".join(new_tokens[j1:j2])
+            
             if tag == 'equal':
-                # 不再直接 append 字符串，而是用 default_font 锁死黑色
-                rich_old.append(TextBlock(font=default_font, text=old_text[i1:i2]))
-                rich_new.append(TextBlock(font=default_font, text=new_text[j1:j2]))
-            elif tag == 'insert':
-                rich_new.append(TextBlock(font=red_font, text=new_text[j1:j2]))
-            elif tag == 'delete':
-                rich_old.append(TextBlock(font=blue_font, text=old_text[i1:i2]))
-            elif tag == 'replace':
-                rich_old.append(TextBlock(font=blue_font, text=old_text[i1:i2]))
-                rich_new.append(TextBlock(font=red_font, text=new_text[j1:j2]))
+                # 内容相同：两边都显示普通黑色文本
+                if old_segment: rich_old.append(TextBlock(font=default_font, text=old_segment))
+                if new_segment: rich_new.append(TextBlock(font=default_font, text=new_segment))
                 
+            elif tag == 'insert':
+                # 新增多出的词：只在“修改后文本”中显示为红色
+                if new_segment: rich_new.append(TextBlock(font=red_bold, text=new_segment))
+                
+            elif tag == 'delete':
+                # 被删掉漏掉的词：只在“原始文本”中显示为蓝色删除线
+                if old_segment: rich_old.append(TextBlock(font=blue_strike, text=old_segment))
+                
+            elif tag == 'replace':
+                # 错词被替换：原始显示蓝色，修改后显示红色
+                if old_segment: rich_old.append(TextBlock(font=blue_strike, text=old_segment))
+                if new_segment: rich_new.append(TextBlock(font=red_bold, text=new_segment))
+
+        # 防御性判断：防止某些极端修改导致 RichText 为空而引发 Excel 保存报错
+        if not rich_old: rich_old = old_text
+        if not rich_new: rich_new = new_text
+
         return rich_old, rich_new
     
     def process_excel_worker(self):
@@ -1559,30 +1592,40 @@ class Subtitle_Compare_App:
         self.log_area.config(state='disabled')
         
         threading.Thread(target=self.worker, daemon=True).start()
-        
-    def apply_markup_rich_text(self, marked_text):
-        """将 AI 返回的 **错词** 解析为 Excel 红色高亮富文本"""
-        if not RICH_TEXT_SUPPORTED or not marked_text: return marked_text
-        red_bold = InlineFont(color="FFFF0000", b=True)
-        black_font = InlineFont(color="FF000000", b=False)
-        
-        # 兼容 ** 和 <> 两种包裹模式
-        if '<' in marked_text and '>' in marked_text and '**' not in marked_text:
-            parts = re.split(r'(<.*?>)', marked_text)
-        else:
-            parts = re.split(r'(\*\*.*?\*\*)', marked_text)
-            
-        new_blocks = []
-        for part in parts:
-            if not part: continue
-            if (part.startswith('**') and part.endswith('**')) or (part.startswith('<') and part.endswith('>')):
-                inner_txt = part[2:-2] if part.startswith('**') else part[1:-1]
-                new_blocks.append(TextBlock(font=red_bold, text=inner_txt))
-            else:
-                new_blocks.append(TextBlock(font=black_font, text=part))
-                
-        if not new_blocks: return marked_text
-        return CellRichText(*new_blocks)
+
+    def get_rich_text_diff(self, old_text, new_text):
+        """核心比对引擎：对比新旧文本，生成双向高亮富文本"""
+        if not RICH_TEXT_SUPPORTED:
+            return old_text, new_text
+        if old_text == new_text:
+            return old_text, new_text
+
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.cell.rich_text import TextBlock, CellRichText
+        import difflib
+
+        # 定义 Beyond Compare 风格的对比样式
+        blue_strike = InlineFont(color="FF0000FF", strike=True)  # 原文被删减部分：蓝色+删除线
+        red_bold = InlineFont(color="FFFF0000", b=True)          # 译文新增加部分：红色+加粗
+        default_font = InlineFont(color="FF000000", b=False)     # 无修改的普通文本：黑色
+
+        rich_old = CellRichText()
+        rich_new = CellRichText()
+
+        matcher = difflib.SequenceMatcher(None, old_text, new_text)
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            if tag == 'equal':
+                rich_old.append(TextBlock(font=default_font, text=old_text[i1:i2]))
+                rich_new.append(TextBlock(font=default_font, text=new_text[j1:j2]))
+            elif tag == 'insert':
+                rich_new.append(TextBlock(font=red_bold, text=new_text[j1:j2]))
+            elif tag == 'delete':
+                rich_old.append(TextBlock(font=blue_strike, text=old_text[i1:i2]))
+            elif tag == 'replace':
+                rich_old.append(TextBlock(font=blue_strike, text=old_text[i1:i2]))
+                rich_new.append(TextBlock(font=red_bold, text=new_text[j1:j2]))
+
+        return rich_old, rich_new
         
     def parse_time_to_ms(self, t_str):
         try:
@@ -1708,11 +1751,11 @@ Compare "Target Subtitles" (human-transcribed, excellent logical context but pro
 1. TOLERATE HOMOPHONES: Do not blindly trust the Reference Text for exact characters. If a word in the Target Subtitles sounds similar (homophone/phonetic difference, but DO NOT allow missing words and extra words), assume the Target is CORRECT and ignore the difference.
 2. STRICT ON MISSING/EXTRA WORDS: You MUST catch "missing words" (漏词) and "extra words" (多词). Compare the word/character count. If the Reference Text contains words omitted in the Target, or if the Target adds words not present in the Reference, you MUST REPORT ALL OF THEM. Target subtitles absolutely DO NOT allow dropping or adding words.
 3. Catch "wrong words" (错词) if they completely disrupt the meaning and don't match the acoustics.
-4. For lines with genuine errors, output the fixed text in `marked_text`, using ** ** to wrap all modifications.
+4. For lines with genuine errors, output the fixed text in `corrected_text`.
 5. Provide a concise "issue" description (e.g., "漏词", "多词", "错词").
 6. ONLY return a valid minified JSON array under the key "result". Exclude any lines that have no errors.
 # Output Format Example:
-{"result": [{"id": "1", "marked_text": "How **are** you", "issue": "漏词"}]}'''
+{"result": [{"id": "1", "corrected_text": "How **are** you", "issue": "漏词"}]}'''
 
             # --- 严格模式：找出所有细微差异，仅无视断句/标点/大小写 ---
             sys_prompt_strict = '''# System Role:
@@ -1723,11 +1766,11 @@ Compare "Target Subtitles" against "Reference Text". Your goal is to strictly id
 1. Identify ALL discrepancies between Target Subtitles and Reference Text. This includes synonymous words, phrasing differences, homophones, missing words, and extra words.
 2. CRITICAL EXCEPTIONS: You MUST completely ignore differences ONLY in line breaks (断句), punctuation (标点符号), and capitalization/case (大小写). Do NOT report an error if the only difference is punctuation, case, or how the sentence is split across lines.
 3. If the wording is different in any other way, you must report it.
-4. Output the corrected/reference text in `marked_text`, must using ** ** to wrap all modifications or discrepancies.
+4. Output the corrected/reference text in `corrected_text`.
 5. Provide a concise "issue" description ("漏词", "同音字差异", "多词", "少词", "单词拼写错误").
 6. ONLY return a valid minified JSON array under the key "result". Exclude lines that perfectly match after normalizing punctuation, case, and line breaks.
 # Output Format Example:
-{"result": [{"id": "1", "marked_text": "You **are** here", "issue": "少词"}]}'''
+{"result": [{"id": "1", "corrected_text": "You **are** here", "issue": "少词"}]}'''
 
             # --- 新增：三段式防误报模式 ---
             sys_prompt_three_part = '''# System Role:
@@ -1743,11 +1786,11 @@ Compare "Target Subtitles" strictly against the "Core Reference".
 2. STRICT ON MISSING/EXTRA WORDS: You MUST catch "missing words" (漏词) and "extra words" (多词). Compare the word/character count. If the Reference Text contains words omitted in the Target, or if the Target adds words not present in the Reference, you MUST REPORT ALL OF THEM. Target subtitles absolutely DO NOT allow dropping or adding words.
 3. CRITICAL BOUNDARY EXEMPTION: If a word seems missing at the very beginning or end of the Target Subtitles, check if it actually belongs to "Context Before" or "Context After". If it does, IGNORE IT and DO NOT report an error.
 4. Catch "wrong words" (错词) if they completely disrupt the meaning and don't match the acoustics.
-5. For lines with genuine errors, output the fixed text in `marked_text`, using ** ** to wrap all modifications.
+5. For lines with genuine errors, output the fixed text in `corrected_text`.
 6. Provide a concise "issue" description (e.g., "漏词", "多词", "错词").
 7. ONLY return a valid minified JSON array under the key "result". Exclude any lines that have no errors.
 # Output Format Example:
-{"result": [{"id": "1", "marked_text": "How **are** you", "issue": "漏词"}]}'''
+{"result": [{"id": "1", "corrected_text": "How **are** you", "issue": "漏词"}]}'''
 
             # 动态获取当前激活的模式
             current_mode_str = self.compare_mode_var.get()
@@ -1819,11 +1862,8 @@ Compare "Target Subtitles" strictly against the "Core Reference".
                         if not ref_str.strip():
                             self.log("  ⚠️ [警告] 提取到的基准 A 为空！时间轴可能脱节。")
 
-                    # ========================================================
-                    
                     for attempt in range(max_retries + 1):
                         try:
-                            # ✨ 修改为 active_prompt
                             res_data = self._send_batch_request(client, ui_model, model_name, active_prompt, payload_dict)
                             
                             batch_dict = {b['ID']: b for b in batch}
@@ -1831,21 +1871,32 @@ Compare "Target Subtitles" strictly against the "Core Reference".
                                 b_id = str(r.get("id"))
                                 if b_id in batch_dict:
                                     orig_b = batch_dict[b_id]
+                                    orig_text = orig_b['Text']
+                                    corrected_text = r.get("corrected_text", orig_text)
+                                    
+                                    # ====== 核心：调用差异对比引擎获取双向高亮富文本 ======
+                                    rich_old, rich_new = self.get_rich_text_diff(orig_text, corrected_text)
+                                    
+                                    # ⚠️ 修正：必须追加到 file_report_data，以便后续在线程锁中安全合并
                                     file_report_data.append({
                                         "文件名": file_b,
                                         "集数": os.path.splitext(file_b)[0],
                                         "时间轴": orig_b['Timeline'],
-                                        "原始字幕(B)": orig_b['Text'],
-                                        "修改标记(B)": r.get("marked_text", ""),
+                                        "原始字幕(B)": rich_old,     # 左侧显示被删掉的蓝字
+                                        "修改后字幕(B)": rich_new,   # 右侧显示新加的红字
                                         "问题描述": r.get("issue", "")
                                     })
-                            break # 成功则跳出重试循环
+                            break
                         except Exception as parse_e:
                             if attempt < max_retries:
-                                self.log(f"  ⚠️ [网络异常] ({file_b}) 2秒后进行第 {attempt + 1}/{max_retries} 次重试... ({str(parse_e)})")
+                                self.log(f"  ⚠️ [重试] 解析或请求失败，准备重试: {str(parse_e)}")
                                 time.sleep(2)
                             else:
-                                self.log(f"  ❌ [彻底失败] ({file_b}) 重试耗尽，跳过该批次: {str(parse_e)}")
+                                self.log(f"  ❌ [本地处理中断] 捕获到异常: {str(parse_e)}")
+
+                # 处理最后一车剩下的尾货
+                if current_batch and not self.stop_flag:
+                    process_batch(current_batch)
 
                 for b in blocks_b:
                     if self.stop_flag: break
@@ -1874,32 +1925,41 @@ Compare "Target Subtitles" strictly against the "Core Reference".
                         try:
                             future.result()
                         except Exception as e:
-                            self.log(f"❌ 线程执行奔溃: {e}")
+                            self.log(f"❌ 线程执行崩溃: {e}")
             else:
                 for i, k in enumerate(common_keys):
                     process_file(i, k)
-                    
-            # 报告输出与着色逻辑
-            if report_data and not self.stop_flag:
-                self.log("\n正在生成高亮富文本 Excel 报告...")
+
+            # ================= 报告输出与着色逻辑 (绝对不能用 Pandas) =================
+            if report_data:
+                self.log("\n正在生成双向差异高亮 Excel 报告...")
+                import openpyxl
+                from openpyxl.cell.rich_text import CellRichText
+                
                 wb = openpyxl.Workbook()
                 ws = wb.active
-                headers = ["文件名", "集数", "时间轴", "原始字幕 (B)", "修改标记后 (B)", "问题描述"]
+                headers = ["文件名", "集数", "时间轴", "原始字幕 (B)", "修改后字幕 (B)", "问题描述"]
                 ws.append(headers)
                 
                 for row_dict in report_data:
+                    # 组装一行的数据
                     row = [
                         row_dict["文件名"], row_dict["集数"], row_dict["时间轴"], 
-                        row_dict["原始字幕(B)"], self.apply_markup_rich_text(row_dict["修改标记(B)"]), 
+                        row_dict["原始字幕(B)"], row_dict["修改后字幕(B)"], 
                         row_dict["问题描述"]
                     ]
+                    # 先附加一个空行占位
                     ws.append(["" for _ in row])
                     r_idx = ws.max_row
+                    
+                    # 逐个单元格写入，拦截 CellRichText 对象保留其高亮颜色
                     for c_idx, val in enumerate(row, 1):
                         cell = ws.cell(row=r_idx, column=c_idx)
-                        if isinstance(val, CellRichText): cell.value = val
-                        else: cell.value = val
-                        
+                        if isinstance(val, CellRichText):
+                            cell.value = val
+                        else:
+                            cell.value = val
+                            
                 wb.save(self.out_path.get())
                 self.log(f"🎉 处理完成！报告已保存至:\n{self.out_path.get()}")
                 self.parent.after(0, lambda: messagebox.showinfo("完成", f"分析完成！共发现 {len(report_data)} 处差异。"))
@@ -1907,7 +1967,7 @@ Compare "Target Subtitles" strictly against the "Core Reference".
                 if not self.stop_flag:
                     self.log("\n✅ 处理完成！未发现任何需要纠正的差异。")
                     self.parent.after(0, lambda: messagebox.showinfo("完成", "对比完成，完美贴合，未发现任何错漏。"))
-                
+                    
         except Exception as e:
             import traceback
             traceback.print_exc()
