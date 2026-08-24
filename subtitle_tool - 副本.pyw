@@ -51,7 +51,9 @@ def decrypt_data(b64_text):
 ENGINES_MAP = {
     'GPT-5.3-chat': 'gpt-5.3-chat-2026-03-03',
     'GPT-5.2-chat': 'gpt-5.2-chat-2025-12-11',
-    'GPT-o3-mini': 'o3-mini-2025-01-31'
+    'GPT-o3-mini': 'o3-mini-2025-01-31',
+    'GPT-5.6-luna(轻量版)': 'gpt-5.6-luna-2026-07-09',
+    'GPT-5.6-terra(标准版)': 'gpt-5.6-terra-2026-07-09'
 }
 
 # ======= LQA 目标语言映射表 (包含所有要求及常见语种) =======
