@@ -691,8 +691,8 @@ class LQA_App:
             return
         
         self.stop_flag = False
-        self.total_prompt_tokens = 0      # 新增：输入 Token 累计[cite: 6]
-        self.total_completion_tokens = 0  # 新增：输出 Token 累计[cite: 6]
+        self.total_prompt_tokens = 0      # 新增：输入 Token 累计
+        self.total_completion_tokens = 0  # 新增：输出 Token 累计
         self.total_tokens_used = 0 
         self.var_stats.set("正在初始化任务...")
         self.btn_start.config(state="disabled")
@@ -5222,7 +5222,7 @@ class Drama_Merge_Series_Term_App:
         rule_desc = (
             "• 判定规则：针对所选语言代码列（如 th, id, en）：\n"
             "   1) merge_status 为 merged 且该语言单元格发生变动（标黄）；\n"
-            "   2) 或 merge_status 为 new 且该语言单元格内容非空[cite: 5]。\n"
+            "   2) 或 merge_status 为 new 且该语言单元格内容非空。\n"
             "• 统计产出：计算所有符合条件的术语条目对应的中文列（zh）总字数（LEN），并导出独立统计报告 Excel。"
         )
         ttk.Label(f_stat, text=rule_desc, foreground="#555555", justify="left").grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
@@ -6071,7 +6071,6 @@ class Xlsx_Compare_App:
             from openpyxl.styles import PatternFill
             from openpyxl.utils import get_column_letter
 
-            # 提取 HEX 颜色代码并适配 openpyxl aRGB 格式
             raw_hex = self.highlight_color_var.get().replace("#", "").strip().upper()
             if len(raw_hex) == 6:
                 fill_color = "FF" + raw_hex
@@ -6083,26 +6082,31 @@ class Xlsx_Compare_App:
             diff_fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
             enable_char_diff = self.enable_char_diff_var.get()
 
-            self.parent.after(0, lambda: self.var_stats.set("正在加载文件 1 (基准)..."))
-            self.log(f"📖 正在加载文件 1 (基准库): {os.path.basename(f1)}")
+            # 1. 高速载入基准表 1（以内存迭代流读取纯文本）
+            self.parent.after(0, lambda: self.var_stats.set("正在内存高速预读文件 1..."))
+            self.log(f"📖 正在预取文件 1 数据: {os.path.basename(f1)}")
             wb1 = openpyxl.load_workbook(f1, data_only=True, read_only=True)
             ws1 = wb1.worksheets[0]
+            
+            # 一次性读出为二维元组，零 cell 寻址开销
+            data1 = [row for row in ws1.iter_rows(values_only=True)]
+            max_r1 = len(data1)
+            max_c1 = max((len(r) for r in data1), default=0)
+            wb1.close()
 
-            self.parent.after(0, lambda: self.var_stats.set("正在加载文件 2 (保留完整样式)..."))
-            self.log(f"📖 正在加载文件 2 (完整格式载入): {os.path.basename(f2)}")
+            # 2. 载入待对比表 2（需保留完整样式）
+            self.parent.after(0, lambda: self.var_stats.set("正在加载文件 2 样式树..."))
+            self.log(f"📖 正在加载文件 2: {os.path.basename(f2)}")
             wb2 = openpyxl.load_workbook(f2)
             ws2 = wb2.worksheets[0]
 
-            max_r1 = ws1.max_row or 0
-            max_c1 = ws1.max_column or 0
             max_r2 = ws2.max_row or 0
             max_c2 = ws2.max_column or 0
 
             max_row = max(max_r1, max_r2)
             max_col = max(max_c1, max_c2)
 
-            self.log(f"🔍 比对范围: [文件1: {ws1.title} ({max_r1}行×{max_c1}列) | 文件2: {ws2.title} ({max_r2}行×{max_c2}列)]")
-            self.log(f"⚙️ 最终比对矩阵尺寸: {max_row} 行 × {max_col} 列 | 逐字符差异标记: {'开启' if enable_char_diff else '关闭'}")
+            self.log(f"🔍 比对范围: {max_row} 行 × {max_col} 列 (极速矩阵模式)")
 
             def norm_cell_val(val):
                 if val is None:
@@ -6110,48 +6114,62 @@ class Xlsx_Compare_App:
                 return str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
 
             diff_count = 0
-            self.parent.after(0, lambda: self.var_stats.set("正在逐单元格比对中..."))
+            self.parent.after(0, lambda: self.var_stats.set("正在高速比对并标记差异..."))
 
-            for r in range(1, max_row + 1):
+            # 3. 逐行比对（优先从内存列表取值，命中差异才操作 openpyxl 节点）
+            for r_idx in range(max_row):
                 if self.stop_flag:
                     break
-                if r % 100 == 0 or r == max_row:
-                    self.parent.after(0, lambda cur=r, tot=max_row: self.var_stats.set(f"比对进度: {cur}/{tot} 行..."))
+                
+                # 降低 UI 调度频率，每 200 行调度一次，防止主线程卡顿
+                if r_idx % 200 == 0 or r_idx == max_row - 1:
+                    cur_r = r_idx + 1
+                    self.parent.after(0, lambda cur=cur_r, tot=max_row: self.var_stats.set(f"比对进度: {cur}/{tot} 行..."))
 
-                for c in range(1, max_col + 1):
-                    val1 = ""
-                    if r <= max_r1 and c <= max_c1:
-                        val1 = norm_cell_val(ws1.cell(row=r, column=c).value)
+                # 从文件 1 内存数据中安全获取行
+                row1_vals = data1[r_idx] if r_idx < max_r1 else ()
+                len_row1 = len(row1_vals)
 
-                    cell2 = ws2.cell(row=r, column=c)
-                    val2 = norm_cell_val(cell2.value)
+                # 获取文件 2 当前行的单元格对象
+                row2_cells = ws2[r_idx + 1]
+                len_row2 = len(row2_cells)
 
-                    # 存在差异
+                for c_idx in range(max_col):
+                    # 极速取值
+                    v1_raw = row1_vals[c_idx] if c_idx < len_row1 else None
+                    val1 = norm_cell_val(v1_raw)
+
+                    # 只有在范围内的 cell2 才存在，否则通过 cell() 触发动态新建
+                    if c_idx < len_row2:
+                        cell2 = row2_cells[c_idx]
+                        val2 = norm_cell_val(cell2.value)
+                    else:
+                        cell2 = ws2.cell(row=r_idx + 1, column=c_idx + 1)
+                        val2 = norm_cell_val(cell2.value)
+
+                    # 发现差异
                     if val1 != val2:
                         diff_count += 1
-                        # 1. 填充差异底色
                         cell2.fill = diff_fill
 
-                        # 2. 若开启了逐字符对比，写入双向差异富文本
                         if enable_char_diff:
                             rich_diff = self.build_inline_rich_diff(val1, val2)
                             cell2.value = rich_diff
 
-                        # 前 30 处差异记录到终端窗口预览
-                        if diff_count <= 30:
-                            coord = f"{get_column_letter(c)}{r}"
+                        if diff_count <= 20:
+                            coord = f"{get_column_letter(c_idx + 1)}{r_idx + 1}"
                             t1_disp = val1[:18] + "..." if len(val1) > 18 else val1
                             t2_disp = val2[:18] + "..." if len(val2) > 18 else val2
-                            self.log(f"  [差异 #{diff_count}] 单元格 {coord}: 文件1='{t1_disp}' vs 文件2='{t2_disp}'")
-
-            wb1.close()
+                            self.log(f"  [差异 #{diff_count}] {coord}: 文件1='{t1_disp}' vs 文件2='{t2_disp}'")
 
             if self.stop_flag:
+                wb2.close()
                 return
 
-            if diff_count > 30:
-                self.log(f"  ... 及其余 {diff_count - 30} 处单元格差异。")
+            if diff_count > 20:
+                self.log(f"  ... 及其余 {diff_count - 20} 处单元格差异。")
 
+            # 4. 保存文件
             self.parent.after(0, lambda: self.var_stats.set("正在保存输出文件..."))
             self.log(f"💾 正在保存标记结果至: {f_out}")
             os.makedirs(os.path.dirname(os.path.abspath(f_out)), exist_ok=True)
