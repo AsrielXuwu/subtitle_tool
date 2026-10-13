@@ -52,11 +52,13 @@ def decrypt_data(b64_text):
 # ==============================================
 
 ENGINES_MAP = {
-    'GPT-5.3-chat': 'gpt-5.3-chat-2026-03-03',
-    'GPT-5.2-chat': 'gpt-5.2-chat-2025-12-11',
-    'GPT-o3-mini': 'o3-mini-2025-01-31',
-    'GPT-5.6-luna(轻量版)': 'gpt-5.6-luna-2026-07-09',
-    'GPT-5.6-terra(标准版)': 'gpt-5.6-terra-2026-07-09'
+    'gpt-6-astra-2026-09-03(旗舰)': 'gpt-6-astra-2026-09-03',
+    'gpt-6-astra-2026-09-03-private': 'gpt-6-astra-2026-09-03-private',
+    'gpt-6-luna-2026-09-22(高速)': 'gpt-6-luna-2026-09-22',
+    'gpt-6-sol-2026-09-22': 'gpt-6-sol-2026-09-22',
+    'gpt-6.1-sol-2026-09-29(均衡)': 'gpt-6.1-sol-2026-09-29',
+    'DeepSeek-V4.1-Flash(高速)': 'DeepSeek-V4.1-Flash',
+    'DeepSeek-V4-Pro': 'DeepSeek-V4-Pro'
 }
 
 # ======= LQA 目标语言映射表 (包含所有要求及常见语种) =======
