@@ -21,6 +21,9 @@ import sys
 import threading
 # ---------------- 新增：多线程预备 ----------------
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, List, Set, Tuple, Any, Optional
+import copy
+
 
 # ================= 核心配置区 =================
 DEFAULT_API_VERSION = "2025-04-01-preview"
@@ -49,11 +52,13 @@ def decrypt_data(b64_text):
 # ==============================================
 
 ENGINES_MAP = {
-    'GPT-5.3-chat': 'gpt-5.3-chat-2026-03-03',
-    'GPT-5.2-chat': 'gpt-5.2-chat-2025-12-11',
-    'GPT-o3-mini': 'o3-mini-2025-01-31',
-    'GPT-5.6-luna(轻量版)': 'gpt-5.6-luna-2026-07-09',
-    'GPT-5.6-terra(标准版)': 'gpt-5.6-terra-2026-07-09'
+    'gpt-6-astra-2026-09-03(旗舰)': 'gpt-6-astra-2026-09-03',
+    'gpt-6-astra-2026-09-03-private': 'gpt-6-astra-2026-09-03-private',
+    'gpt-6-luna-2026-09-22(高速)': 'gpt-6-luna-2026-09-22',
+    'gpt-6-sol-2026-09-22': 'gpt-6-sol-2026-09-22',
+    'gpt-6.1-sol-2026-09-29(均衡)': 'gpt-6.1-sol-2026-09-29',
+    'DeepSeek-V4.1-Flash(高速)': 'DeepSeek-V4.1-Flash',
+    'DeepSeek-V4-Pro': 'DeepSeek-V4-Pro'
 }
 
 # ======= LQA 目标语言映射表 (包含所有要求及常见语种) =======
@@ -688,8 +693,8 @@ class LQA_App:
             return
         
         self.stop_flag = False
-        self.total_prompt_tokens = 0      # 新增：输入 Token 累计[cite: 6]
-        self.total_completion_tokens = 0  # 新增：输出 Token 累计[cite: 6]
+        self.total_prompt_tokens = 0      # 新增：输入 Token 累计
+        self.total_completion_tokens = 0  # 新增：输出 Token 累计
         self.total_tokens_used = 0 
         self.var_stats.set("正在初始化任务...")
         self.btn_start.config(state="disabled")
@@ -4923,10 +4928,16 @@ def switch_category():
     nb_srt.pack_forget()
     nb_ass.pack_forget()
     nb_other.pack_forget()
+    nb_drama.pack_forget()  # 隐藏新的大分类
     
-    if cat == "SRT": nb_srt.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    elif cat == "ASS": nb_ass.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-    else: nb_other.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    if cat == "SRT": 
+        nb_srt.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    elif cat == "ASS": 
+        nb_ass.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    elif cat == "OTHER": 
+        nb_other.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+    elif cat == "DRAMA": 
+        nb_drama.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
 def scan_sheets():
     f = split_in_var.get().strip()
@@ -4975,6 +4986,1219 @@ class DnDEntry(ttk.Entry):
             self.insert(0, path)
 # ===================================================================================
 
+# ==============================================================================
+# ==================== 移植：合并系列剧术语 (Series Term Merge) ====================
+# ==============================================================================
+BASIC_ATTRS_KEYS: List[str] = ['part of speech', 'description', 'case sensitive', 'tag', 'term key']
+LANG_SUFFIX: str = '_case sensitive'
+MERGE_STATUS_COL: str = 'merge_status'
+LANG_PRIORITY: List[str] = ['zh', 'en']
+
+def _safe_str(value: Any) -> str:
+    """将任何值转换为字符串，None/NaN转为空字符串"""
+    if pd.isna(value):
+        return ''
+    return str(value).strip()
+
+def _build_language_attrs(row: pd.Series, basic_cols: Set[str], from_flag: str) -> Tuple[Dict[str, Dict[str, str]], Set[str]]:
+    lang_attrs = {}
+    lang_set = set()
+    for col in row.index:
+        if col in basic_cols or col.endswith(LANG_SUFFIX) or col == MERGE_STATUS_COL:
+            continue
+        lang_code = str(col).strip()
+        text_val = _safe_str(row[col])
+        case_col = f'{lang_code}{LANG_SUFFIX}'
+        case_val = _safe_str(row[case_col]) if case_col in row.index else ''
+        lang_attrs[lang_code] = {'text': text_val, 'case_sensitive': case_val, 'from': from_flag}
+        lang_set.add(lang_code)
+    return (lang_attrs, lang_set)
+
+def load_glossary(file_path: str) -> Tuple[Dict[str, Dict], Set[str]]:
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f'文件不存在: {file_path}')
+    
+    df = pd.read_excel(file_path, dtype=str, engine='openpyxl')
+    df = df.fillna('')
+    for col in BASIC_ATTRS_KEYS:
+        if col not in df.columns:
+            df[col] = ''
+            
+    basic_cols_set = set(BASIC_ATTRS_KEYS)
+    terms = {}
+    global_lang_set = set()
+    for _, row in df.iterrows():
+        zh_val = _safe_str(row.get('zh', ''))
+        if not zh_val:
+            continue
+        basic = {key: _safe_str(row.get(key, '')) for key in BASIC_ATTRS_KEYS}
+        lang_attrs, lang_set = _build_language_attrs(row, basic_cols_set, 'previous')
+        global_lang_set.update(lang_set)
+        term_obj = {
+            'basic_attrs': basic,
+            'language_attrs': lang_attrs,
+            'merge_attrs': {'status': 'keep', 'modified_fields': []}
+        }
+        terms[zh_val] = term_obj
+    return (terms, global_lang_set)
+
+def _merge_basic_attrs(base_basic: Dict[str, str], new_basic: Dict[str, str]) -> Tuple[bool, List[str]]:
+    updated = False
+    modified = []
+    for key in BASIC_ATTRS_KEYS:
+        if base_basic.get(key, '') == '' and new_basic.get(key, '') != '':
+            base_basic[key] = new_basic[key]
+            updated = True
+            modified.append(key)
+    return (updated, modified)
+
+def _merge_language_attrs(base_lang: Dict[str, Dict[str, str]], new_lang: Dict[str, Dict[str, str]]) -> Tuple[bool, List[str]]:
+    updated = False
+    modified_columns = []
+    for lang_code, lang_info in new_lang.items():
+        if lang_code not in base_lang:
+            base_lang[lang_code] = {'text': lang_info['text'], 'case_sensitive': lang_info['case_sensitive'], 'from': 'current'}
+            updated = True
+            modified_columns.append(lang_code)
+            modified_columns.append(f'{lang_code}{LANG_SUFFIX}')
+        else:
+            if base_lang[lang_code]['text'] == '' and lang_info['text'] != '':
+                old_case = base_lang[lang_code]['case_sensitive']
+                new_case = lang_info['case_sensitive']
+                base_lang[lang_code]['text'] = lang_info['text']
+                base_lang[lang_code]['case_sensitive'] = new_case
+                base_lang[lang_code]['from'] = 'current'
+                updated = True
+                modified_columns.append(lang_code)
+                if old_case != new_case:
+                    modified_columns.append(f'{lang_code}{LANG_SUFFIX}')
+    return (updated, modified_columns)
+
+def merge_glossaries(prev_terms: Dict[str, Dict], curr_terms: Dict[str, Dict], global_lang_set: Set[str]) -> Dict[str, Dict]:
+    merged = copy.deepcopy(prev_terms)
+    for zh_val, curr_obj in curr_terms.items():
+        if zh_val not in merged:
+            new_obj = copy.deepcopy(curr_obj)
+            new_obj['merge_attrs']['status'] = 'new'
+            new_obj['merge_attrs']['modified_fields'] = []
+            merged[zh_val] = new_obj
+        else:
+            base_obj = merged[zh_val]
+            updated = False
+            all_modified_columns = []
+            basic_updated, basic_modified = _merge_basic_attrs(base_obj['basic_attrs'], curr_obj['basic_attrs'])
+            if basic_updated:
+                updated = True
+                all_modified_columns.extend(basic_modified)
+            lang_updated, lang_modified = _merge_language_attrs(base_obj['language_attrs'], curr_obj['language_attrs'])
+            if lang_updated:
+                updated = True
+                all_modified_columns.extend(lang_modified)
+            if updated:
+                base_obj['merge_attrs']['modified_fields'] = list(set(base_obj['merge_attrs'].get('modified_fields', [])) | set(all_modified_columns))
+                if base_obj['merge_attrs']['status'] != 'new':
+                    base_obj['merge_attrs']['status'] = 'merged'
+
+    for zh_val, obj in merged.items():
+        lang_attrs = obj['language_attrs']
+        for lang in global_lang_set:
+            if lang not in lang_attrs:
+                lang_attrs[lang] = {'text': '', 'case_sensitive': '', 'from': ''}
+    return merged
+
+def export_merged_glossary(merged_terms: Dict[str, Dict], output_path: str, global_lang_set: Set[str]) -> None:
+    from openpyxl.styles import PatternFill
+    yellow_fill = PatternFill(start_color='FFFF00', end_color='FFFF00', fill_type='solid')
+
+    lang_list = []
+    for lang in LANG_PRIORITY:
+        if lang in global_lang_set:
+            lang_list.append(lang)
+    rest = sorted([lang for lang in global_lang_set if lang not in LANG_PRIORITY])
+    lang_list.extend(rest)
+
+    rows = []
+    modified_rows = []
+    for zh_val, obj in merged_terms.items():
+        row = {}
+        for key in BASIC_ATTRS_KEYS:
+            row[key] = obj['basic_attrs'].get(key, '')
+        for lang in lang_list:
+            lang_info = obj['language_attrs'].get(lang, {'text': '', 'case_sensitive': ''})
+            row[lang] = lang_info['text']
+            row[f'{lang}{LANG_SUFFIX}'] = lang_info['case_sensitive']
+        status = obj['merge_attrs'].get('status', '')
+        row[MERGE_STATUS_COL] = status
+        rows.append(row)
+        if status == 'merged':
+            modified_cols = obj['merge_attrs'].get('modified_fields', [])
+            modified_rows.append(modified_cols)
+        else:
+            modified_rows.append([])
+
+    df = pd.DataFrame(rows)
+    lang_columns = []
+    for lang in lang_list:
+        lang_columns.extend([lang, f'{lang}{LANG_SUFFIX}'])
+    final_columns = BASIC_ATTRS_KEYS + lang_columns + [MERGE_STATUS_COL]
+    df = df[[col for col in final_columns if col in df.columns]]
+
+    with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='术语表')
+        workbook = writer.book
+        worksheet = writer.sheets['术语表']
+        col_to_idx = {col: idx for idx, col in enumerate(final_columns)}
+        for row_idx, modified_cols in enumerate(modified_rows, start=2):
+            if not modified_cols:
+                continue
+            for col_name in modified_cols:
+                if col_name in col_to_idx:
+                    col_idx = col_to_idx[col_name]
+                    cell = worksheet.cell(row=row_idx, column=col_idx + 1)
+                    cell.fill = yellow_fill
+        workbook.save(output_path)
+
+# ==============================================================================
+# ==================== 移植：合并系列剧术语 (Series Term Merge + 字数统计版) ====================
+# ==============================================================================
+
+class Drama_Merge_Series_Term_App:
+    def __init__(self, parent_frame):
+        self.parent = parent_frame
+        self.pre_term_file = tk.StringVar()
+        self.current_term_file = tk.StringVar()
+        self.output_folder = tk.StringVar()
+        self.stop_flag = False
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 1. 文件选择区域
+        f_file = ttk.LabelFrame(self.parent, text="1. 术语文件选择与输出目录 (支持按住Ctrl多选多个文件)", padding=12)
+        f_file.pack(fill="x", padx=10, pady=5)
+        f_file.columnconfigure(1, weight=1)
+
+        def browse_multi_files(target_var, is_curr=False):
+            paths = filedialog.askopenfilenames(
+                title="选择术语文件 (可多选)",
+                filetypes=[("Excel Files", "*.xlsx;*.xls"), ("All Files", "*.*")]
+            )
+            if paths:
+                target_var.set("; ".join(paths))
+                if is_curr:
+                    self.auto_scan_languages()
+
+        ttk.Label(f_file, text="上一季术语文件:").grid(row=0, column=0, sticky="e", pady=4)
+        DnDEntry(f_file, textvariable=self.pre_term_file, width=55).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览 (多选)...", command=lambda: browse_multi_files(self.pre_term_file, False)).grid(row=0, column=2, padx=5)
+
+        ttk.Label(f_file, text="当前季术语文件:").grid(row=1, column=0, sticky="e", pady=4)
+        DnDEntry(f_file, textvariable=self.current_term_file, width=55).grid(row=1, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览 (多选)...", command=lambda: browse_multi_files(self.current_term_file, True)).grid(row=1, column=2, padx=5)
+
+        ttk.Label(f_file, text="合并结果输出目录:").grid(row=2, column=0, sticky="e", pady=4)
+        DnDEntry(f_file, textvariable=self.output_folder, width=55).grid(row=2, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览...", command=lambda: self.output_folder.set(filedialog.askdirectory())).grid(row=2, column=2, padx=5)
+
+        # 2. 统计语言列多选配置区
+        f_stat = ttk.LabelFrame(self.parent, text="2. 新增/变动术语中文源字数统计设置", padding=12)
+        f_stat.pack(fill="x", padx=10, pady=5)
+        f_stat.columnconfigure(1, weight=1)
+
+        f_stat_ctrl = ttk.Frame(f_stat)
+        f_stat_ctrl.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        
+        ttk.Button(f_stat_ctrl, text="🔍 预扫描识别语言列", command=self.auto_scan_languages).pack(side="left", padx=(0, 5))
+        ttk.Button(f_stat_ctrl, text="全选", command=self.select_all_langs).pack(side="left", padx=5)
+        ttk.Button(f_stat_ctrl, text="清空选择", command=self.clear_all_langs).pack(side="left", padx=5)
+        ttk.Label(f_stat_ctrl, text="(默认全选检测到的语言；不勾选则在合并后按全量语言统计)", foreground="gray").pack(side="left", padx=10)
+
+        f_lb = ttk.Frame(f_stat)
+        f_lb.grid(row=1, column=0, columnspan=3, sticky="ew", pady=2)
+        self.lang_listbox = tk.Listbox(f_lb, selectmode=tk.MULTIPLE, height=4, exportselection=False)
+        self.lang_listbox.pack(side="left", fill="both", expand=True)
+        sb_lang = ttk.Scrollbar(f_lb, orient="vertical", command=self.lang_listbox.yview)
+        sb_lang.pack(side="right", fill="y")
+        self.lang_listbox.config(yscrollcommand=sb_lang.set)
+
+        rule_desc = (
+            "• 判定规则：针对所选语言代码列（如 th, id, en）：\n"
+            "   1) merge_status 为 merged 且该语言单元格发生变动（标黄）；\n"
+            "   2) 或 merge_status 为 new 且该语言单元格内容非空。\n"
+            "• 统计产出：计算所有符合条件的术语条目对应的中文列（zh）总字数（LEN），并导出独立统计报告 Excel。"
+        )
+        ttk.Label(f_stat, text=rule_desc, foreground="#555555", justify="left").grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
+
+        # 3. 操作与日志区
+        f_act = tk.Frame(self.parent)
+        f_act.pack(fill="both", expand=True, padx=10, pady=5)
+
+        self.var_stats = tk.StringVar(value="准备就绪")
+        ttk.Label(f_act, textvariable=self.var_stats, font=("Arial", 10, "bold")).pack(pady=(0, 5))
+
+        btn_f = tk.Frame(f_act)
+        btn_f.pack(pady=5)
+        self.btn_start = ttk.Button(btn_f, text="🚀 开始合并并统计字数", command=self.start)
+        self.btn_start.pack(side="left", padx=10)
+        self.btn_stop = ttk.Button(btn_f, text="🛑 停止", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=10)
+
+        self.log_area = scrolledtext.ScrolledText(f_act, width=85, height=15, state='disabled')
+        self.log_area.pack(fill="both", expand=True)
+
+    def log(self, msg):
+        self.parent.after(0, self._log, msg)
+
+    def _log(self, msg):
+        self.log_area.config(state='normal')
+        self.log_area.insert(tk.END, msg + "\n")
+        self.log_area.see(tk.END)
+        self.log_area.config(state='disabled')
+
+    def stop(self):
+        self.stop_flag = True
+        self.btn_stop.config(state="disabled")
+        self.log("⚠️ 已触发停止指令...")
+
+    def _split_files(self, val_str: str) -> List[str]:
+        if not val_str:
+            return []
+        cleaned = val_str.replace('；', ';').replace('\n', ';')
+        files = [f.strip().strip('"').strip("'") for f in cleaned.split(';') if f.strip()]
+        return [f for f in files if os.path.exists(f)]
+
+    def select_all_langs(self):
+        self.lang_listbox.select_set(0, tk.END)
+
+    def clear_all_langs(self):
+        self.lang_listbox.selection_clear(0, tk.END)
+
+    def auto_scan_languages(self):
+        """预先扫描当前选中的文件，提取除 zh 和基础列外的语言代码并加入列表框"""
+        files = self._split_files(self.current_term_file.get()) + self._split_files(self.pre_term_file.get())
+        if not files:
+            return
+        
+        detected_langs = set()
+        basic_set = set(BASIC_ATTRS_KEYS) | {MERGE_STATUS_COL, 'zh'}
+
+        for fp in files:
+            try:
+                df = pd.read_excel(fp, nrows=2, engine='openpyxl')
+                for c in df.columns:
+                    c_str = str(c).strip()
+                    if c_str in basic_set or c_str.endswith(LANG_SUFFIX):
+                        continue
+                    if c_str:
+                        detected_langs.add(c_str)
+            except Exception:
+                pass
+
+        if detected_langs:
+            # 排序展示，en优先
+            sorted_langs = []
+            if 'en' in detected_langs:
+                sorted_langs.append('en')
+            sorted_langs.extend(sorted([l for l in detected_langs if l != 'en']))
+
+            self.lang_listbox.delete(0, tk.END)
+            for lang in sorted_langs:
+                self.lang_listbox.insert(tk.END, lang)
+            self.lang_listbox.select_set(0, tk.END)  # 默认全选
+            self.log(f"📋 已预扫描识别出 {len(sorted_langs)} 个待统计目标语项: {sorted_langs}")
+
+    def _load_and_consolidate(self, file_paths: List[str], label: str) -> Tuple[Dict[str, Dict], Set[str]]:
+        if len(file_paths) == 1:
+            self.log(f"📖 读取【{label}】术语文件: {os.path.basename(file_paths[0])}")
+            return load_glossary(file_paths[0])
+
+        self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备执行季内预合并...")
+        base_terms, total_lang_set = load_glossary(file_paths[0])
+        self.log(f"  -> [{label}] 已载入基准文件: {os.path.basename(file_paths[0])} (术语数: {len(base_terms)})")
+
+        for idx, fp in enumerate(file_paths[1:], start=2):
+            if self.stop_flag: break
+            self.log(f"  -> [{label}] 正在融合第 {idx} 个文件: {os.path.basename(fp)}...")
+            nxt_terms, nxt_langs = load_glossary(fp)
+            total_lang_set = total_lang_set | nxt_langs
+            base_terms = merge_glossaries(base_terms, nxt_terms, total_lang_set)
+
+        self.log(f"✅ 【{label}】所有文件季内预合并完成，合并后有效术语数: {len(base_terms)}")
+        return base_terms, total_lang_set
+
+    def start(self):
+        pre_files = self._split_files(self.pre_term_file.get())
+        curr_files = self._split_files(self.current_term_file.get())
+        out_folder = self.output_folder.get().strip()
+
+        if not pre_files or not curr_files or not out_folder:
+            return messagebox.showwarning("警告", "请确保已有效选择【上一季术语文件】、【当前季术语文件】以及【输出文件夹】！")
+
+        # 获取手动选择的待统计语言
+        sel_indices = self.lang_listbox.curselection()
+        selected_langs = [self.lang_listbox.get(i) for i in sel_indices]
+
+        self.stop_flag = False
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.log_area.config(state='normal')
+        self.log_area.delete(1.0, tk.END)
+        self.log_area.config(state='disabled')
+
+        threading.Thread(target=self.worker, args=(pre_files, curr_files, out_folder, selected_langs), daemon=True).start()
+
+    def worker(self, pre_files: List[str], curr_files: List[str], out_folder: str, target_stat_langs: List[str]):
+        try:
+            self.parent.after(0, lambda: self.var_stats.set("正在载入并处理上一季术语..."))
+            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季")
+
+            if self.stop_flag: return
+
+            self.parent.after(0, lambda: self.var_stats.set("正在载入并处理当前季术语..."))
+            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季")
+
+            if self.stop_flag: return
+
+            global_lang_set = prev_lang_set | curr_lang_set
+            self.log(f"🔍 全量语言集合计包含 {len(global_lang_set)} 种语言: {sorted(list(global_lang_set))}")
+
+            self.parent.after(0, lambda: self.var_stats.set("正在执行最终跨季深度合并..."))
+            self.log("⚙️ 正在执行跨季术语深度合并 (上一季 vs 当前季)...")
+            merged_terms = merge_glossaries(prev_terms, curr_terms, global_lang_set)
+
+            first_curr_name = os.path.splitext(os.path.basename(curr_files[0]))[0]
+            if len(curr_files) > 1:
+                first_curr_name += f"_and_{len(curr_files)-1}files"
+            output_file = os.path.join(out_folder, f'{first_curr_name}_merged.xlsx')
+            report_file = os.path.join(out_folder, f'{first_curr_name}_WordCount.xlsx')
+            os.makedirs(out_folder, exist_ok=True)
+
+            self.parent.after(0, lambda: self.var_stats.set("正在导出 Excel 并高亮标黄..."))
+            self.log(f"💾 正在导出合并结果至: {output_file}")
+            export_merged_glossary(merged_terms, output_file, global_lang_set)
+
+            # ================= 核心统计逻辑：计算各语项的新增/变动中文源字数 =================
+            self.parent.after(0, lambda: self.var_stats.set("正在统计各语项新增/变动中文字数..."))
+            self.log("\n📈 正在执行新增/变动词条及中文源字数（LEN）统计...")
+
+            # 确定要统计的语言列表（排除 zh 自身）
+            if target_stat_langs:
+                eval_langs = [l for l in target_stat_langs if l in global_lang_set and l != 'zh']
+            else:
+                eval_langs = [l for l in sorted(list(global_lang_set)) if l != 'zh']
+
+            stat_results = []
+            detail_records = []  # 记录具体的变动明细行，便于在统计报告第二个 sheet 核账
+
+            for lang in eval_langs:
+                total_zh_char_count = 0
+                matched_entries_count = 0
+
+                for zh_val, obj in merged_terms.items():
+                    status = obj['merge_attrs'].get('status', '')
+                    lang_info = obj['language_attrs'].get(lang, {'text': ''})
+                    curr_text = str(lang_info.get('text', '')).strip()
+
+                    is_qualify = False
+                    reason = ""
+
+                    # 条件 1: merge_status == 'merged' 且该语言发生变动（包含在修改列表里，即标黄）
+                    if status == 'merged':
+                        mod_fields = obj['merge_attrs'].get('modified_fields', [])
+                        if lang in mod_fields:
+                            is_qualify = True
+                            reason = "合并更新(标黄)"
+
+                    # 条件 2: merge_status == 'new' 且该语言单元格内容非空
+                    elif status == 'new':
+                        if curr_text != "":
+                            is_qualify = True
+                            reason = "全新词条"
+
+                    if is_qualify:
+                        zh_len = len(zh_val)
+                        total_zh_char_count += zh_len
+                        matched_entries_count += 1
+                        detail_records.append({
+                            "语言代码": lang,
+                            "触发类型": reason,
+                            "中文术语 (zh)": zh_val,
+                            "中文字数 (LEN)": zh_len,
+                            "对应语项文本": curr_text,
+                            "词条状态": status
+                        })
+
+                stat_results.append({
+                    "语言代码": lang,
+                    "新增/变动词条数": matched_entries_count,
+                    "对应中文总字数 (LEN)": total_zh_char_count
+                })
+
+            # 导出独立统计报告
+            with pd.ExcelWriter(report_file, engine='openpyxl') as writer:
+                # Sheet 1: 汇总统计
+                df_summary = pd.DataFrame(stat_results)
+                df_summary.to_excel(writer, index=False, sheet_name='各语项字数统计汇总')
+                
+                # Sheet 2: 核算明细
+                if detail_records:
+                    df_detail = pd.DataFrame(detail_records)
+                    df_detail.to_excel(writer, index=False, sheet_name='变动明细清单')
+                else:
+                    pd.DataFrame(columns=["提示"]).to_excel(writer, index=False, sheet_name='无变动词条')
+
+            self.log(f"📊 统计报告已导出至: {report_file}")
+            self.log("---------------------------------------------------------")
+            self.log(f"{'语言代码':<12} | {'变动词条数':<12} | {'中文源字数 (LEN)':<15}")
+            self.log("---------------------------------------------------------")
+            for r in stat_results:
+                self.log(f"{r['语言代码']:<12} | {r['新增/变动词条数']:<14} | {r['对应中文总字数 (LEN)']:<15}")
+            self.log("---------------------------------------------------------")
+
+            # 终端常规统计总结
+            total = len(merged_terms)
+            keep_cnt = sum(1 for obj in merged_terms.values() if obj['merge_attrs'].get('status') == 'keep')
+            merged_cnt = sum(1 for obj in merged_terms.values() if obj['merge_attrs'].get('status') == 'merged')
+            new_cnt = sum(1 for obj in merged_terms.values() if obj['merge_attrs'].get('status') == 'new')
+
+            summary_popup = "\n".join([f"• {r['语言代码']}: 变动 {r['新增/变动词条数']} 条 | 中文 {r['对应中文总字数 (LEN)']} 字" for r in stat_results])
+
+            self.parent.after(0, lambda: messagebox.showinfo(
+                "合并与统计完成", 
+                f"🎉 处理完成！\n\n"
+                f"【合并统计】\n"
+                f"• 总术语数: {total}\n"
+                f"• 沿用上一季 (keep): {keep_cnt}\n"
+                f"• 补齐更新 (merged - 已标黄): {merged_cnt}\n"
+                f"• 当前季新增 (new): {new_cnt}\n\n"
+                f"【各语项中文字数统计 (LEN)】\n{summary_popup}\n\n"
+                f"📁 合并文件已生成至:\n{output_file}\n"
+                f"📊 字数统计报告已生成至:\n{report_file}"
+            ))
+
+        except Exception as e:
+            import traceback
+            err_msg = traceback.format_exc()
+            self.log(f"❌ 发生异常:\n{err_msg}")
+            self.parent.after(0, lambda: messagebox.showerror("错误", f"处理过程中发生异常:\n{str(e)}"))
+        finally:
+            self.parent.after(0, lambda: self.btn_start.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
+            self.parent.after(0, lambda: self.var_stats.set("任务已结束" if not self.stop_flag else "已被用户终止"))
+# ==============================================================================
+# ==================== 移植：合并对白与画面字 (CC & OST Merge) ====================
+# ==============================================================================
+
+def merge_subtitles_for_cc_and_ost_core(cc_list, ost_list, mode='ass'):
+    """无损移植自原反编译代码：按时间轴切分并合并画面字与对白（画面字在上，对白在下）"""
+    cc_list.sort(key=lambda x: (x[0], x[1]))
+    if not ost_list:
+        return cc_list
+    ost_list.sort(key=lambda x: (x[0], x[1]))
+
+    all_times = set()
+    for item in cc_list + ost_list:
+        all_times.add(item[0])
+        all_times.add(item[1])
+    times = sorted(all_times)
+
+    merged = []
+    for i in range(len(times) - 1):
+        seg_start, seg_end = times[i], times[i + 1]
+        if seg_start >= seg_end:
+            continue
+        active_osts = [o for o in ost_list if o[0] <= seg_start and o[1] >= seg_end]
+        active_ccs = [c for c in cc_list if c[0] <= seg_start and c[1] >= seg_end]
+        if not active_osts and not active_ccs:
+            continue
+
+        ost_texts = [o[-1] for o in active_osts]
+        cc_texts = [c[-1] for c in active_ccs]
+        combined_text = '\n'.join(ost_texts + cc_texts).strip()
+
+        base_item = copy.deepcopy(active_ccs[0] if active_ccs else active_osts[0])
+        base_item[0] = seg_start
+        base_item[1] = seg_end
+        base_item[-1] = combined_text
+
+        if mode == 'ass':
+            ost_styles = [o[5] for o in active_osts]
+            cc_styles = [c[5] for c in active_ccs]
+            base_item[5] = ' '.join(filter(None, ost_styles + cc_styles)).strip()
+
+        merged.append(base_item)
+
+    merged.sort(key=lambda x: (x[0], x[1]))
+    return merged
+
+def read_text_from_ass_for_standalone_core(ass_file):
+    """从单个 ASS 文件中提取并以方括号区分对白与画面字"""
+    ass_diag_pattern = re.compile(r"^Dialogue:\s*(\d+),([^,]+),([^,]+),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),([^,]*),(.*)$")
+    ass_fmt_pattern = re.compile(r"^Format:\s*Layer,.*Text\s*$", re.I)
+
+    def t2ms(t):
+        t = t.replace(',', '.').strip()
+        h, m, s_ms = t.split(':')
+        s, ms = s_ms.split('.')
+        ms_val = int(ms) * 10 if len(ms) == 2 else int(ms)
+        return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + ms_val
+
+    cc_info, ost_info, pre_lines = [], [], []
+    pre_index = 0
+
+    with open(ass_file, 'r', encoding='utf-8-sig', errors='ignore') as f:
+        lines = f.readlines()
+
+    for i, line in enumerate(lines):
+        m1 = ass_diag_pattern.match(line.strip())
+        if m1:
+            layer, start, end, style, name, ml, mr, mv, effect, text = m1.groups()
+            item = [t2ms(start), t2ms(end), layer, start, end, style, name, ml, mr, mv, effect, text.replace('\\N', '\n')]
+            if ('[' in text and ']' in text) or ('【' in text and '】' in text):
+                ost_info.append(item)
+            else:
+                cc_info.append(item)
+        elif not pre_index and ass_fmt_pattern.match(line.strip()):
+            pre_index = i + 1
+
+    pre_lines = lines[:pre_index]
+    return cc_info, ost_info, pre_lines
+
+def read_text_from_srt_for_cc_ost_core(srt_file):
+    """从 SRT 文件读取用于配对的对白或画面字"""
+    srt_parser = re.compile(r"(\d+)?\n?(\d{1,2}:\d{2}:\d{2}[,\.]\d{3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[,\.]\d{3})\n([\s\S]*?)(?=\n{2,}|\Z)")
+    
+    def t2ms(t):
+        t = t.replace('.', ',').strip()
+        hms, ms = t.split(',')
+        h, m, s = hms.split(':')
+        return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
+
+    with open(srt_file, 'r', encoding='utf-8-sig', errors='ignore') as f:
+        content = f.read().strip() + '\n\n99:99:99,999 --> 99:99:99,999'
+
+    data = []
+    for match in srt_parser.finditer(content):
+        _, timeline, text = match.group(1), match.group(2), match.group(3)
+        start, end = timeline.split(' --> ')
+        data.append([t2ms(start), t2ms(end), timeline, text.strip() if text else ''])
+    return data
+
+class Merge_CC_OST_App:
+    def __init__(self, parent_frame):
+        self.parent = parent_frame
+        self.input_folder = tk.StringVar()
+        self.output_folder = tk.StringVar()
+
+        # 模式变量: ass_standalone, ass_dual, srt_dual
+        self.var_file_mode = tk.StringVar(value="ass_standalone")
+        self.cc_suffix_var = tk.StringVar(value="_对话")
+        self.ost_suffix_var = tk.StringVar(value="_画面字")
+
+        # 过滤与校验参数
+        self.line_limit_var = tk.IntVar(value=4)
+        self.punct_mode_var = tk.IntVar(value=0)  # 0: 不移除, 1: 移除行末, 2: 移除轴末
+        self.punct_chars_var = tk.StringVar(value="，。？！,.?!")
+
+        self.stop_flag = False
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 1. 文件夹设置
+        f_dir = ttk.LabelFrame(self.parent, text="1. 文件夹路径设置", padding=15)
+        f_dir.pack(fill="x", padx=10, pady=5)
+        f_dir.columnconfigure(1, weight=1)
+
+        ttk.Label(f_dir, text="字幕输入文件夹:").grid(row=0, column=0, sticky="e", pady=5)
+        DnDEntry(f_dir, textvariable=self.input_folder, width=55).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(f_dir, text="浏览...", command=lambda: self.input_folder.set(filedialog.askdirectory())).grid(row=0, column=2, padx=5)
+
+        ttk.Label(f_dir, text="合并输出文件夹:").grid(row=1, column=0, sticky="e", pady=5)
+        DnDEntry(f_dir, textvariable=self.output_folder, width=55).grid(row=1, column=1, sticky="ew", padx=5)
+        ttk.Button(f_dir, text="浏览...", command=lambda: self.output_folder.set(filedialog.askdirectory())).grid(row=1, column=2, padx=5)
+
+        # 2. 处理模式与配对规则
+        f_mode = ttk.LabelFrame(self.parent, text="2. 字幕格式与配对模式", padding=15)
+        f_mode.pack(fill="x", padx=10, pady=5)
+
+        def update_suffix_visibility():
+            if self.var_file_mode.get() == "ass_standalone":
+                self.f_suffix.pack_forget()
+            else:
+                self.f_suffix.pack(fill="x", pady=5)
+
+        ttk.Radiobutton(f_mode, text="ASS - 单文件智能合并 (自动根据 [] 或 【】 分离画面字并与对白合并)", 
+                        variable=self.var_file_mode, value="ass_standalone", command=update_suffix_visibility).pack(anchor="w", pady=2)
+        ttk.Radiobutton(f_mode, text="ASS - 双文件配对合并 (同名文件按指定后缀自动配对)", 
+                        variable=self.var_file_mode, value="ass_dual", command=update_suffix_visibility).pack(anchor="w", pady=2)
+        ttk.Radiobutton(f_mode, text="SRT - 双文件配对合并 (同名文件按指定后缀自动配对)", 
+                        variable=self.var_file_mode, value="srt_dual", command=update_suffix_visibility).pack(anchor="w", pady=2)
+
+        self.f_suffix = ttk.Frame(f_mode)
+        ttk.Label(self.f_suffix, text="对白文件后缀:").pack(side="left")
+        ttk.Entry(self.f_suffix, textvariable=self.cc_suffix_var, width=12).pack(side="left", padx=(5, 15))
+        ttk.Label(self.f_suffix, text="画面字文件后缀:").pack(side="left")
+        ttk.Entry(self.f_suffix, textvariable=self.ost_suffix_var, width=12).pack(side="left", padx=(5, 0))
+
+        # 3. 校验与标点处理
+        f_rules = ttk.LabelFrame(self.parent, text="3. 格式与标点清洗规则", padding=15)
+        f_rules.pack(fill="x", padx=10, pady=5)
+
+        f_rule_r1 = ttk.Frame(f_rules)
+        f_rule_r1.pack(fill="x", pady=2)
+        ttk.Label(f_rule_r1, text="单屏行数限制:").pack(side="left")
+        ttk.Spinbox(f_rule_r1, from_=0, to=10, textvariable=self.line_limit_var, width=4).pack(side="left", padx=(5, 5))
+        ttk.Label(f_rule_r1, text="行 (0 代表无限制，超出限制的条目将导出报告)", foreground="gray").pack(side="left")
+
+        f_rule_r2 = ttk.Frame(f_rules)
+        f_rule_r2.pack(fill="x", pady=5)
+        ttk.Label(f_rule_r2, text="标点处理:").pack(side="left")
+        ttk.Radiobutton(f_rule_r2, text="不移除标点", variable=self.punct_mode_var, value=0).pack(side="left", padx=5)
+        ttk.Radiobutton(f_rule_r2, text="移除单行行末标点", variable=self.punct_mode_var, value=1).pack(side="left", padx=5)
+        ttk.Radiobutton(f_rule_r2, text="移除时间轴末尾标点", variable=self.punct_mode_var, value=2).pack(side="left", padx=5)
+
+        f_rule_r3 = ttk.Frame(f_rules)
+        f_rule_r3.pack(fill="x", pady=2)
+        ttk.Label(f_rule_r3, text="清洗标点列表:").pack(side="left")
+        ttk.Entry(f_rule_r3, textvariable=self.punct_chars_var, width=30).pack(side="left", padx=5)
+
+        # 4. 操作与日志区
+        f_act = tk.Frame(self.parent)
+        f_act.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.var_stats = tk.StringVar(value="准备就绪")
+        ttk.Label(f_act, textvariable=self.var_stats, font=("Arial", 10, "bold")).pack(pady=(0, 5))
+
+        btn_f = tk.Frame(f_act)
+        btn_f.pack(pady=5)
+        self.btn_start = ttk.Button(btn_f, text="🚀 开始合并对白与画面字", command=self.start)
+        self.btn_start.pack(side="left", padx=10)
+        self.btn_stop = ttk.Button(btn_f, text="🛑 停止", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=10)
+
+        self.log_area = scrolledtext.ScrolledText(f_act, width=85, height=18, state='disabled')
+        self.log_area.pack(fill="both", expand=True)
+
+    def log(self, msg):
+        self.parent.after(0, self._log, msg)
+
+    def _log(self, msg):
+        self.log_area.config(state='normal')
+        self.log_area.insert(tk.END, msg + "\n")
+        self.log_area.see(tk.END)
+        self.log_area.config(state='disabled')
+
+    def stop(self):
+        self.stop_flag = True
+        self.btn_stop.config(state="disabled")
+        self.log("⚠️ 已触发停止指令...")
+
+    def apply_punct(self, text):
+        mode = self.punct_mode_var.get()
+        chars = self.punct_chars_var.get()
+        if mode == 0 or not chars:
+            return text
+        esc_chars = re.escape(chars)
+        if mode == 1:  # 移除每行末尾标点
+            return re.sub(f'[{esc_chars}]+(?=\n|$)', '', text)
+        elif mode == 2:  # 移除整个字幕最后末尾标点
+            return re.sub(f'[{esc_chars}]+$', '', text.strip())
+        return text
+
+    def start(self):
+        in_dir = self.input_folder.get().strip()
+        out_dir = self.output_folder.get().strip()
+
+        if not in_dir or not out_dir:
+            return messagebox.showwarning("警告", "请完整选择【字幕输入文件夹】和【合并输出文件夹】！")
+        if not os.path.exists(in_dir):
+            return messagebox.showerror("错误", "输入文件夹不存在！")
+
+        self.stop_flag = False
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.log_area.config(state='normal')
+        self.log_area.delete(1.0, tk.END)
+        self.log_area.config(state='disabled')
+
+        threading.Thread(target=self.worker, args=(in_dir, out_dir), daemon=True).start()
+
+    def worker(self, in_dir, out_dir):
+        try:
+            mode = self.var_file_mode.get()
+            target_ext = '.ass' if 'ass' in mode else '.srt'
+            os.makedirs(out_dir, exist_ok=True)
+
+            fail_files = []
+            all_fail_timelines = defaultdict(list)
+
+            # 1. 扫描与配对任务
+            matched_tasks = []
+            if mode == 'ass_standalone':
+                for root_d, _, files in os.walk(in_dir):
+                    for f in files:
+                        if f.lower().endswith(target_ext):
+                            matched_tasks.append({
+                                'type': 'standalone',
+                                'src': os.path.join(root_d, f),
+                                'name': f
+                            })
+            else:
+                cc_sfx = self.cc_suffix_var.get().strip()
+                ost_sfx = self.ost_suffix_var.get().strip()
+                cc_files, ost_files = {}, {}
+                for root_d, _, files in os.walk(in_dir):
+                    for f in files:
+                        if f.lower().endswith(target_ext):
+                            fpath = os.path.join(root_d, f)
+                            b_name = os.path.splitext(f)[0]
+                            if cc_sfx and b_name.endswith(cc_sfx):
+                                cc_files[b_name[:-len(cc_sfx)]] = fpath
+                            elif ost_sfx and b_name.endswith(ost_sfx):
+                                ost_files[b_name[:-len(ost_sfx)]] = fpath
+
+                for key, cc_path in cc_files.items():
+                    ost_path = ost_files.get(key)
+                    matched_tasks.append({
+                        'type': 'dual',
+                        'cc_path': cc_path,
+                        'ost_path': ost_path,
+                        'name': os.path.basename(cc_path)
+                    })
+
+            total = len(matched_tasks)
+            if total == 0:
+                self.log("⚠️ 未在输入文件夹中找到符合匹配规则的字幕文件！")
+                self.parent.after(0, lambda: messagebox.showwarning("提示", "未找到符合条件的字幕文件！"))
+                return
+
+            self.log(f"📋 共扫描到 {total} 个待处理任务，开始执行合并...")
+
+            # 2. 逐文件合并
+            for idx, task in enumerate(matched_tasks, 1):
+                if self.stop_flag:
+                    break
+
+                self.parent.after(0, lambda c=idx, t=total: self.var_stats.set(f"正在合并 [{c}/{t}]: {task['name']}"))
+                self.log(f"  -> 正在处理 [{idx}/{total}]: {task['name']}")
+
+                try:
+                    if task['type'] == 'standalone':
+                        cc_data, ost_data, pre_lines = read_text_from_ass_for_standalone_core(task['src'])
+                        if not cc_data and not ost_data:
+                            fail_files.append([task['name'], task['src'], '', '未读取到有效字幕'])
+                            continue
+
+                        merged = merge_subtitles_for_cc_and_ost_core(cc_data, ost_data, mode='ass')
+                        save_file = os.path.join(out_dir, task['name'])
+
+                        def ms2ass(ms):
+                            ss = '%.02f' % (ms / 1000)
+                            s_f, ms_f = ss.split('.')
+                            m, s = divmod(int(s_f), 60)
+                            h, m = divmod(m, 60)
+                            return f"{h}:{m:02d}:{s:02d}.{ms_f}"
+
+                        with open(save_file, 'w', encoding='utf-8-sig') as f_out:
+                            f_out.writelines(pre_lines)
+                            for row in merged:
+                                text_clean = self.apply_punct(row[-1])
+                                lines_cnt = len(text_clean.split('\n'))
+                                if self.line_limit_var.get() > 0 and lines_cnt > self.line_limit_var.get():
+                                    all_fail_timelines[task['name']].append([task['name'], ms2ass(row[0]), ms2ass(row[1]), text_clean, lines_cnt])
+                                f_out.write(f"Dialogue: {row[2]},{ms2ass(row[0])},{ms2ass(row[1])},{row[5]},{row[6]},{row[7]},{row[8]},{row[9]},{row[10]},{text_clean.replace(chr(10), r'\\N')}\n")
+
+                    elif task['type'] == 'dual':
+                        if not task['ost_path']:
+                            fail_files.append([task['name'], task['cc_path'], '', '未找到对应的画面字配对文件'])
+                            continue
+
+                        save_file = os.path.join(out_dir, task['name'])
+
+                        def ms2srt(ms):
+                            ss = '%.03f' % (ms / 1000)
+                            s_f, ms_f = ss.split('.')
+                            m, s = divmod(int(s_f), 60)
+                            h, m = divmod(m, 60)
+                            return f"{h:02d}:{m:02d}:{s:02d},{ms_f}"
+
+                        if mode == 'srt_dual':
+                            cc_data = read_text_from_srt_for_cc_ost_core(task['cc_path'])
+                            ost_data = read_text_from_srt_for_cc_ost_core(task['ost_path'])
+                            merged = merge_subtitles_for_cc_and_ost_core(cc_data, ost_data, mode='srt')
+
+                            with open(save_file, 'w', encoding='utf-8-sig') as f_out:
+                                for s_idx, row in enumerate(merged, 1):
+                                    text_clean = self.apply_punct(row[-1])
+                                    lines_cnt = len(text_clean.split('\n'))
+                                    if self.line_limit_var.get() > 0 and lines_cnt > self.line_limit_var.get():
+                                        all_fail_timelines[task['name']].append([task['name'], ms2srt(row[0]), ms2srt(row[1]), text_clean, lines_cnt])
+                                    f_out.write(f"{s_idx}\n{ms2srt(row[0])} --> {ms2srt(row[1])}\n{text_clean}\n\n")
+
+                except Exception as e:
+                    fail_files.append([task['name'], '', '', str(e)])
+
+            # 3. 错误或行数超限日志导出
+            if fail_files or all_fail_timelines:
+                cur_time = time.strftime('%Y%m%d%H%M%S', time.localtime())
+                log_file = os.path.join(out_dir, f'Merge_CC_and_OST_Log_{cur_time}.xlsx')
+                wb = openpyxl.Workbook()
+                ws = wb.active
+                ws.title = '处理失败文件'
+                ws.append(['文件名', '对白文件', '画面字文件', '错误信息'])
+                for r in fail_files:
+                    ws.append(r)
+                if all_fail_timelines:
+                    ws2 = wb.create_sheet('单屏行数超限记录')
+                    ws2.append(['文件名', '开始时间', '结束时间', '合并字幕内容', '总行数'])
+                    for _, rows in all_fail_timelines.items():
+                        for r in rows:
+                            ws2.append(r)
+                wb.save(log_file)
+                self.log(f"⚠️ 发现异常或行数超限，详情已导出报告: {log_file}")
+
+            success_cnt = total - len(fail_files)
+            self.log(f"\n✨ 合并处理完成！成功: {success_cnt} 个文件, 失败: {len(fail_files)} 个文件。")
+            self.parent.after(0, lambda: messagebox.showinfo("完成", f"合并处理完成！\n成功: {success_cnt} 个文件\n失败: {len(fail_files)} 个文件。"))
+
+        except Exception as e:
+            import traceback
+            err_msg = traceback.format_exc()
+            self.log(f"❌ 发生致命异常:\n{err_msg}")
+            self.parent.after(0, lambda: messagebox.showerror("错误", f"合并发生异常:\n{str(e)}"))
+        finally:
+            self.parent.after(0, lambda: self.btn_start.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
+            self.parent.after(0, lambda: self.var_stats.set("任务已结束" if not self.stop_flag else "已被用户终止"))
+
+# ==============================================================================
+# ==================== 新增：XLSX 逐单元格对比与高亮标记 ====================
+# ==============================================================================
+
+# ==============================================================================
+# ==================== 新增：XLSX 逐单元格对比与高亮标记 (升级版) ====================
+# ==============================================================================
+
+class Xlsx_Compare_App:
+    def __init__(self, parent_frame):
+        self.parent = parent_frame
+        self.file1_path = tk.StringVar()
+        self.file2_path = tk.StringVar()
+        self.out_path = tk.StringVar()
+        self.highlight_color_var = tk.StringVar(value="#FFFF00")  # 默认经典亮黄
+        self.enable_char_diff_var = tk.BooleanVar(value=True)     # 新增：单元格内逐字符差异对比开关
+        self.stop_flag = False
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        # 1. 文件设置区
+        f_file = ttk.LabelFrame(self.parent, text="1. 文件设置", padding=15)
+        f_file.pack(fill="x", padx=10, pady=5)
+        f_file.columnconfigure(1, weight=1)
+
+        ttk.Label(f_file, text="文件 1 (前置/基准 XLSX):").grid(row=0, column=0, sticky="e", pady=5)
+        DnDEntry(f_file, textvariable=self.file1_path, width=55).grid(row=0, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览...", command=self.browse_file1).grid(row=0, column=2, padx=5)
+
+        ttk.Label(f_file, text="文件 2 (待比对 XLSX):").grid(row=1, column=0, sticky="e", pady=5)
+        DnDEntry(f_file, textvariable=self.file2_path, width=55).grid(row=1, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="浏览...", command=self.browse_file2).grid(row=1, column=2, padx=5)
+
+        ttk.Label(f_file, text="输出文件 (标记后的文件 2):").grid(row=2, column=0, sticky="e", pady=5)
+        DnDEntry(f_file, textvariable=self.out_path, width=55).grid(row=2, column=1, sticky="ew", padx=5)
+        ttk.Button(f_file, text="另存为...", command=self.browse_out).grid(row=2, column=2, padx=5)
+
+        # 2. 颜色与比对规则
+        f_cfg = ttk.LabelFrame(self.parent, text="2. 高亮颜色与差异标记选项", padding=15)
+        f_cfg.pack(fill="x", padx=10, pady=5)
+
+        f_color = ttk.Frame(f_cfg)
+        f_color.pack(fill="x", pady=2)
+
+        ttk.Label(f_color, text="差异单元格底色:").pack(side="left")
+        self.color_preview_btn = tk.Button(f_color, width=4, bg=self.highlight_color_var.get(), relief="ridge", command=self.pick_color)
+        self.color_preview_btn.pack(side="left", padx=5)
+
+        ttk.Label(f_color, text="推荐底色:").pack(side="left", padx=(15, 5))
+        presets = [("亮黄", "#FFFF00"), ("浅红", "#FFC7CE"), ("淡绿", "#C6EFCE"), ("天蓝", "#BDD7EE"), ("浅橙", "#FCE4D6")]
+        for name, col_hex in presets:
+            ttk.Button(f_color, text=name, width=5, command=lambda c=col_hex: self.set_color(c)).pack(side="left", padx=2)
+
+        # === 新增：单元格内逐字符比对开关 ===
+        f_diff_opt = ttk.Frame(f_cfg)
+        f_diff_opt.pack(fill="x", pady=(8, 2))
+        ttk.Checkbutton(f_diff_opt, text="开启单元格内逐字符对比 (文本内容用 蓝色删除线 标记删除、红色加粗 标记新增)", 
+                        variable=self.enable_char_diff_var).pack(side="left")
+
+        rule_desc = (
+            "• 比对模式：以单元格坐标（如 A1, B2...）严格一一对应对比两个文件【第 1 个 Sheet】的文本内容。\n"
+            "• 格式保留：输出文件直接基于文件 2 生成，完整保留其原始列宽、行高、合并单元格等所有原始排版。\n"
+            "• 逐字对比开启时：差异单元格内会以 [文件1删除部分(蓝划线)] + [文件2新增部分(红加粗)] 的双向富文本直观展示差异细节。"
+        )
+        ttk.Label(f_cfg, text=rule_desc, foreground="#555555", justify="left").pack(anchor="w", pady=(8, 0))
+
+        # 3. 操作与日志区
+        f_act = tk.Frame(self.parent)
+        f_act.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.var_stats = tk.StringVar(value="准备就绪")
+        ttk.Label(f_act, textvariable=self.var_stats, font=("Arial", 10, "bold")).pack(pady=(0, 5))
+
+        btn_f = tk.Frame(f_act)
+        btn_f.pack(pady=5)
+        self.btn_start = ttk.Button(btn_f, text="🚀 开始逐格比对并高亮标记", command=self.start)
+        self.btn_start.pack(side="left", padx=10)
+        self.btn_stop = ttk.Button(btn_f, text="🛑 停止", command=self.stop, state="disabled")
+        self.btn_stop.pack(side="left", padx=10)
+
+        self.log_area = scrolledtext.ScrolledText(f_act, width=85, height=18, state='disabled')
+        self.log_area.pack(fill="both", expand=True)
+
+    def browse_file1(self):
+        p = filedialog.askopenfilename(title="选择前置基准文件 1", filetypes=[("Excel Files", "*.xlsx")])
+        if p:
+            self.file1_path.set(p)
+
+    def browse_file2(self):
+        p = filedialog.askopenfilename(title="选择待比对文件 2", filetypes=[("Excel Files", "*.xlsx")])
+        if p:
+            self.file2_path.set(p)
+            if not self.out_path.get().strip():
+                base, ext = os.path.splitext(p)
+                self.out_path.set(f"{base}_Compared{ext}")
+
+    def browse_out(self):
+        p = filedialog.asksaveasfilename(title="选择输出保存路径", defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
+        if p:
+            self.out_path.set(p)
+
+    def set_color(self, hex_code):
+        self.highlight_color_var.set(hex_code.upper())
+        self.color_preview_btn.config(bg=hex_code.upper())
+
+    def pick_color(self):
+        c = colorchooser.askcolor(title="选择高亮标记颜色", initialcolor=self.highlight_color_var.get())
+        if c[1]:
+            self.set_color(c[1])
+
+    def log(self, msg):
+        self.parent.after(0, self._log, msg)
+
+    def _log(self, msg):
+        self.log_area.config(state='normal')
+        self.log_area.insert(tk.END, msg + "\n")
+        self.log_area.see(tk.END)
+        self.log_area.config(state='disabled')
+
+    def stop(self):
+        self.stop_flag = True
+        self.btn_stop.config(state="disabled")
+        self.log("⚠️ 正在中止比对操作...")
+
+    def build_inline_rich_diff(self, old_text, new_text):
+        """
+        基于 difflib 生成单元格内逐字符/逐词双向高亮富文本：
+        - 文件1中被删减的内容：蓝色 + 删除线 (Blue Strike)
+        - 文件2中新增加的内容：红色 + 加粗 (Red Bold)
+        - 相同的内容：黑色正常字体 (Default)
+        """
+        if not RICH_TEXT_SUPPORTED or old_text == new_text:
+            return new_text
+
+        from openpyxl.cell.text import InlineFont
+        from openpyxl.cell.rich_text import TextBlock, CellRichText
+        import difflib
+        import re
+
+        blue_strike = InlineFont(color="FF0000FF", strike=True)  # 删除：蓝字+删除线
+        red_bold = InlineFont(color="FFFF0000", b=True)          # 新增：红字+加粗
+        default_font = InlineFont(color="FF000000", b=False)     # 相同：黑色普通
+
+        # 智能分词：数字/英文单词整词切分，中文字符与标点单字符切分，保留空格换行
+        def tokenize(text):
+            return re.findall(r'[a-zA-Z0-9_]+|\s+|.', str(text))
+
+        old_tokens = tokenize(old_text)
+        new_tokens = tokenize(new_text)
+
+        rich_res = CellRichText()
+        matcher = difflib.SequenceMatcher(None, old_tokens, new_tokens)
+
+        for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+            old_seg = "".join(old_tokens[i1:i2])
+            new_seg = "".join(new_tokens[j1:j2])
+
+            if tag == 'equal':
+                if new_seg:
+                    rich_res.append(TextBlock(font=default_font, text=new_seg))
+            elif tag == 'insert':
+                if new_seg:
+                    rich_res.append(TextBlock(font=red_bold, text=new_seg))
+            elif tag == 'delete':
+                if old_seg:
+                    rich_res.append(TextBlock(font=blue_strike, text=old_seg))
+            elif tag == 'replace':
+                if old_seg:
+                    rich_res.append(TextBlock(font=blue_strike, text=old_seg))
+                if new_seg:
+                    rich_res.append(TextBlock(font=red_bold, text=new_seg))
+
+        return rich_res if len(rich_res) > 0 else new_text
+
+    def start(self):
+        f1 = self.file1_path.get().strip()
+        f2 = self.file2_path.get().strip()
+        f_out = self.out_path.get().strip()
+
+        if not f1 or not f2 or not f_out:
+            return messagebox.showwarning("警告", "请完整选择【文件 1】、【文件 2】以及【输出文件路径】！")
+        if not os.path.exists(f1):
+            return messagebox.showerror("错误", "文件 1 不存在，请核实！")
+        if not os.path.exists(f2):
+            return messagebox.showerror("错误", "文件 2 不存在，请核实！")
+
+        self.stop_flag = False
+        self.btn_start.config(state="disabled")
+        self.btn_stop.config(state="normal")
+        self.log_area.config(state='normal')
+        self.log_area.delete(1.0, tk.END)
+        self.log_area.config(state='disabled')
+
+        threading.Thread(target=self.worker, args=(f1, f2, f_out), daemon=True).start()
+
+    def worker(self, f1, f2, f_out):
+        try:
+            import openpyxl
+            from openpyxl.styles import PatternFill
+            from openpyxl.utils import get_column_letter
+
+            raw_hex = self.highlight_color_var.get().replace("#", "").strip().upper()
+            if len(raw_hex) == 6:
+                fill_color = "FF" + raw_hex
+            elif len(raw_hex) == 8:
+                fill_color = raw_hex
+            else:
+                fill_color = "FFFFFF00"
+
+            diff_fill = PatternFill(start_color=fill_color, end_color=fill_color, fill_type="solid")
+            enable_char_diff = self.enable_char_diff_var.get()
+
+            # 1. 高速载入基准表 1（以内存迭代流读取纯文本）
+            self.parent.after(0, lambda: self.var_stats.set("正在内存高速预读文件 1..."))
+            self.log(f"📖 正在预取文件 1 数据: {os.path.basename(f1)}")
+            wb1 = openpyxl.load_workbook(f1, data_only=True, read_only=True)
+            ws1 = wb1.worksheets[0]
+            
+            # 一次性读出为二维元组，零 cell 寻址开销
+            data1 = [row for row in ws1.iter_rows(values_only=True)]
+            max_r1 = len(data1)
+            max_c1 = max((len(r) for r in data1), default=0)
+            wb1.close()
+
+            # 2. 载入待对比表 2（需保留完整样式）
+            self.parent.after(0, lambda: self.var_stats.set("正在加载文件 2 样式树..."))
+            self.log(f"📖 正在加载文件 2: {os.path.basename(f2)}")
+            wb2 = openpyxl.load_workbook(f2)
+            ws2 = wb2.worksheets[0]
+
+            max_r2 = ws2.max_row or 0
+            max_c2 = ws2.max_column or 0
+
+            max_row = max(max_r1, max_r2)
+            max_col = max(max_c1, max_c2)
+
+            self.log(f"🔍 比对范围: {max_row} 行 × {max_col} 列 (极速矩阵模式)")
+
+            def norm_cell_val(val):
+                if val is None:
+                    return ""
+                return str(val).replace("\r\n", "\n").replace("\r", "\n").strip()
+
+            diff_count = 0
+            self.parent.after(0, lambda: self.var_stats.set("正在高速比对并标记差异..."))
+
+            # 3. 逐行比对（优先从内存列表取值，命中差异才操作 openpyxl 节点）
+            for r_idx in range(max_row):
+                if self.stop_flag:
+                    break
+                
+                # 降低 UI 调度频率，每 200 行调度一次，防止主线程卡顿
+                if r_idx % 200 == 0 or r_idx == max_row - 1:
+                    cur_r = r_idx + 1
+                    self.parent.after(0, lambda cur=cur_r, tot=max_row: self.var_stats.set(f"比对进度: {cur}/{tot} 行..."))
+
+                # 从文件 1 内存数据中安全获取行
+                row1_vals = data1[r_idx] if r_idx < max_r1 else ()
+                len_row1 = len(row1_vals)
+
+                # 获取文件 2 当前行的单元格对象
+                row2_cells = ws2[r_idx + 1]
+                len_row2 = len(row2_cells)
+
+                for c_idx in range(max_col):
+                    # 极速取值
+                    v1_raw = row1_vals[c_idx] if c_idx < len_row1 else None
+                    val1 = norm_cell_val(v1_raw)
+
+                    # 只有在范围内的 cell2 才存在，否则通过 cell() 触发动态新建
+                    if c_idx < len_row2:
+                        cell2 = row2_cells[c_idx]
+                        val2 = norm_cell_val(cell2.value)
+                    else:
+                        cell2 = ws2.cell(row=r_idx + 1, column=c_idx + 1)
+                        val2 = norm_cell_val(cell2.value)
+
+                    # 发现差异
+                    if val1 != val2:
+                        diff_count += 1
+                        cell2.fill = diff_fill
+
+                        if enable_char_diff:
+                            rich_diff = self.build_inline_rich_diff(val1, val2)
+                            cell2.value = rich_diff
+
+                        if diff_count <= 20:
+                            coord = f"{get_column_letter(c_idx + 1)}{r_idx + 1}"
+                            t1_disp = val1[:18] + "..." if len(val1) > 18 else val1
+                            t2_disp = val2[:18] + "..." if len(val2) > 18 else val2
+                            self.log(f"  [差异 #{diff_count}] {coord}: 文件1='{t1_disp}' vs 文件2='{t2_disp}'")
+
+            if self.stop_flag:
+                wb2.close()
+                return
+
+            if diff_count > 20:
+                self.log(f"  ... 及其余 {diff_count - 20} 处单元格差异。")
+
+            # 4. 保存文件
+            self.parent.after(0, lambda: self.var_stats.set("正在保存输出文件..."))
+            self.log(f"💾 正在保存标记结果至: {f_out}")
+            os.makedirs(os.path.dirname(os.path.abspath(f_out)), exist_ok=True)
+            wb2.save(f_out)
+            wb2.close()
+
+            self.log(f"\n==================== 📊 比对完成 ====================")
+            self.log(f"• 比较单元格总数: {max_row * max_col}")
+            self.log(f"• 标记差异单元格: {diff_count} 处")
+            self.log(f"• 输出文件: {f_out}")
+
+            diff_detail_hint = "所有差异单元格已填充高亮底色，且已用【蓝色删除线/红色加粗】标出字词变动细节。" if enable_char_diff else "所有差异单元格已填充选定高亮底色。"
+            self.parent.after(0, lambda: messagebox.showinfo(
+                "比对完成", 
+                f"比对完成！\n\n共扫描：{max_row} 行 × {max_col} 列\n累计标记差异单元格：{diff_count} 处。\n\n{diff_detail_hint}\n文件 2 原始格式已完好保留。"
+            ))
+
+        except Exception as e:
+            import traceback
+            err_msg = traceback.format_exc()
+            self.log(f"❌ 发生异常:\n{err_msg}")
+            self.parent.after(0, lambda: messagebox.showerror("错误", f"比对过程中发生异常:\n{str(e)}"))
+        finally:
+            self.parent.after(0, lambda: self.btn_start.config(state="normal"))
+            self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
+            self.parent.after(0, lambda: self.var_stats.set("任务已结束" if not self.stop_flag else "已被用户终止"))
+
 root = TkinterDnD.Tk()  # 替换原来的 tk.Tk()，让主窗口赋予拖拽超能力
 root.title("字幕拆分与合并工具箱")
 root.geometry("770x670")
@@ -5009,10 +6233,13 @@ category_var = tk.StringVar(value="SRT")
 ttk.Radiobutton(nav_frame, text=" 📝 基本功能 ", variable=category_var, value="SRT", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=(0, 5), ipadx=10, ipady=3)
 ttk.Radiobutton(nav_frame, text=" 🎬 高级功能 ", variable=category_var, value="ASS", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=5, ipadx=10, ipady=3)
 ttk.Radiobutton(nav_frame, text=" 🛠️ 其他功能 ", variable=category_var, value="OTHER", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=5, ipadx=10, ipady=3)
+# 新增的顶部大分类按钮（名称可自定，如“系列剧术语”或“短剧功能”）
+ttk.Radiobutton(nav_frame, text=" 📚 L10N功能 ", variable=category_var, value="DRAMA", command=switch_category, style='Toolbutton').pack(side=tk.LEFT, padx=5, ipadx=10, ipady=3)
 
 nb_srt = ttk.Notebook(root)
 nb_ass = ttk.Notebook(root)
 nb_other = ttk.Notebook(root)
+nb_drama = ttk.Notebook(root)  # 新增的大分类容器
 
 nb_srt.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 # ================= TAB 1: 拆分 =================
@@ -8463,6 +9690,18 @@ compare_tool_instance = Subtitle_Compare_App(tab_compare, lqa_tool_instance)
 # ================= TAB 17: AI对比分析调轴 =================
 tab_align = create_scrollable_tab(nb_other, " ⏱️ AI字幕调轴 ", padding=10)
 align_tool_instance = Subtitle_Align_App(tab_align, lqa_tool_instance)
+
+# ================= TAB: 合并系列剧术语 =================
+tab_series_term = create_scrollable_tab(nb_drama, " 📚 合并系列剧术语 ", padding=10)
+series_term_app_instance = Drama_Merge_Series_Term_App(tab_series_term)
+
+# ================= TAB: 合并对白与画面字 =================
+tab_merge_cc_ost = create_scrollable_tab(nb_drama, " 🎬 合并对白与画面字 ", padding=10)
+merge_cc_ost_app_instance = Merge_CC_OST_App(tab_merge_cc_ost)
+
+# ================= TAB: XLSX 对比 =================
+tab_xlsx_comp = create_scrollable_tab(nb_drama, " 📊 XLSX对比 ", padding=10)
+xlsx_comp_app_instance = Xlsx_Compare_App(tab_xlsx_comp)
 
 def stop_xlsx_translation():
     if trans_is_running.get():

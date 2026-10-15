@@ -5014,7 +5014,7 @@ def _build_language_attrs(row: pd.Series, basic_cols: Set[str], from_flag: str) 
         lang_set.add(lang_code)
     return (lang_attrs, lang_set)
 
-def load_glossary(file_path: str) -> Tuple[Dict[str, Dict], Set[str]]:
+def load_glossary(file_path: str, key_col: str = 'zh') -> Tuple[Dict[str, Dict], Set[str]]:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f'文件不存在: {file_path}')
     
@@ -5028,8 +5028,8 @@ def load_glossary(file_path: str) -> Tuple[Dict[str, Dict], Set[str]]:
     terms = {}
     global_lang_set = set()
     for _, row in df.iterrows():
-        zh_val = _safe_str(row.get('zh', ''))
-        if not zh_val:
+        key_val = _safe_str(row.get(key_col, ''))
+        if not key_val:
             continue
         basic = {key: _safe_str(row.get(key, '')) for key in BASIC_ATTRS_KEYS}
         lang_attrs, lang_set = _build_language_attrs(row, basic_cols_set, 'previous')
@@ -5039,7 +5039,7 @@ def load_glossary(file_path: str) -> Tuple[Dict[str, Dict], Set[str]]:
             'language_attrs': lang_attrs,
             'merge_attrs': {'status': 'keep', 'modified_fields': []}
         }
-        terms[zh_val] = term_obj
+        terms[key_val] = term_obj
     return (terms, global_lang_set)
 
 def _merge_basic_attrs(base_basic: Dict[str, str], new_basic: Dict[str, str]) -> Tuple[bool, List[str]]:
@@ -5168,7 +5168,9 @@ class Drama_Merge_Series_Term_App:
         self.pre_term_file = tk.StringVar()
         self.current_term_file = tk.StringVar()
         self.output_folder = tk.StringVar()
+        self.primary_key_var = tk.StringVar(value="zh")  # 新增：主Key列选择变量，默认 zh
         self.stop_flag = False
+        self.all_detected_langs = []  # 缓存扫描到的所有语言列
 
         self.setup_ui()
 
@@ -5178,40 +5180,46 @@ class Drama_Merge_Series_Term_App:
         f_file.pack(fill="x", padx=10, pady=5)
         f_file.columnconfigure(1, weight=1)
 
-        def browse_multi_files(target_var, is_curr=False):
+        def browse_multi_files(target_var):
             paths = filedialog.askopenfilenames(
                 title="选择术语文件 (可多选)",
                 filetypes=[("Excel Files", "*.xlsx;*.xls"), ("All Files", "*.*")]
             )
             if paths:
                 target_var.set("; ".join(paths))
-                if is_curr:
-                    self.auto_scan_languages()
+                self.auto_scan_languages()
 
         ttk.Label(f_file, text="上一季术语文件:").grid(row=0, column=0, sticky="e", pady=4)
         DnDEntry(f_file, textvariable=self.pre_term_file, width=55).grid(row=0, column=1, sticky="ew", padx=5)
-        ttk.Button(f_file, text="浏览 (多选)...", command=lambda: browse_multi_files(self.pre_term_file, False)).grid(row=0, column=2, padx=5)
+        ttk.Button(f_file, text="浏览 (多选)...", command=lambda: browse_multi_files(self.pre_term_file)).grid(row=0, column=2, padx=5)
 
         ttk.Label(f_file, text="当前季术语文件:").grid(row=1, column=0, sticky="e", pady=4)
         DnDEntry(f_file, textvariable=self.current_term_file, width=55).grid(row=1, column=1, sticky="ew", padx=5)
-        ttk.Button(f_file, text="浏览 (多选)...", command=lambda: browse_multi_files(self.current_term_file, True)).grid(row=1, column=2, padx=5)
+        ttk.Button(f_file, text="浏览 (多选)...", command=lambda: browse_multi_files(self.current_term_file)).grid(row=1, column=2, padx=5)
 
         ttk.Label(f_file, text="合并结果输出目录:").grid(row=2, column=0, sticky="e", pady=4)
         DnDEntry(f_file, textvariable=self.output_folder, width=55).grid(row=2, column=1, sticky="ew", padx=5)
         ttk.Button(f_file, text="浏览...", command=lambda: self.output_folder.set(filedialog.askdirectory())).grid(row=2, column=2, padx=5)
 
-        # 2. 统计语言列多选配置区
-        f_stat = ttk.LabelFrame(self.parent, text="2. 新增/变动术语中文源字数统计设置", padding=12)
+        # 2. 主Key列与统计语言列设置区
+        f_stat = ttk.LabelFrame(self.parent, text="2. 主Key列选择与新增/变动术语源字数统计设置", padding=12)
         f_stat.pack(fill="x", padx=10, pady=5)
         f_stat.columnconfigure(1, weight=1)
 
+        # 顶部控制栏：扫描按钮 + 主Key下拉选择 + 全选/清空
         f_stat_ctrl = ttk.Frame(f_stat)
-        f_stat_ctrl.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+        f_stat_ctrl.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
         
-        ttk.Button(f_stat_ctrl, text="🔍 预扫描识别语言列", command=self.auto_scan_languages).pack(side="left", padx=(0, 5))
-        ttk.Button(f_stat_ctrl, text="全选", command=self.select_all_langs).pack(side="left", padx=5)
-        ttk.Button(f_stat_ctrl, text="清空选择", command=self.clear_all_langs).pack(side="left", padx=5)
-        ttk.Label(f_stat_ctrl, text="(默认全选检测到的语言；不勾选则在合并后按全量语言统计)", foreground="gray").pack(side="left", padx=10)
+        ttk.Button(f_stat_ctrl, text="🔍 预扫描识别语言列", command=self.auto_scan_languages).pack(side="left", padx=(0, 10))
+        
+        ttk.Label(f_stat_ctrl, text="主Key列(唯一匹配键):").pack(side="left", padx=(5, 2))
+        self.cb_primary_key = ttk.Combobox(f_stat_ctrl, textvariable=self.primary_key_var, values=["zh"], width=10, state="readonly")
+        self.cb_primary_key.pack(side="left", padx=(0, 15))
+        self.cb_primary_key.bind("<<ComboboxSelected>>", lambda e: self.refresh_target_lang_listbox())
+
+        ttk.Button(f_stat_ctrl, text="全选统计语项", command=self.select_all_langs).pack(side="left", padx=3)
+        ttk.Button(f_stat_ctrl, text="清空选择", command=self.clear_all_langs).pack(side="left", padx=3)
+        ttk.Label(f_stat_ctrl, text="(默认以 zh 为主Key并全选其余目标语言)", foreground="gray").pack(side="left", padx=8)
 
         f_lb = ttk.Frame(f_stat)
         f_lb.grid(row=1, column=0, columnspan=3, sticky="ew", pady=2)
@@ -5222,10 +5230,11 @@ class Drama_Merge_Series_Term_App:
         self.lang_listbox.config(yscrollcommand=sb_lang.set)
 
         rule_desc = (
-            "• 判定规则：针对所选语言代码列（如 th, id, en）：\n"
+            "• 主Key规则：以所选【主Key列】（默认 zh）作为唯一键比对合并；若该列为空则跳过该行。\n"
+            "• 判定规则：针对下方所选目标语言列（如 th, id, en）：\n"
             "   1) merge_status 为 merged 且该语言单元格发生变动（标黄）；\n"
             "   2) 或 merge_status 为 new 且该语言单元格内容非空。\n"
-            "• 统计产出：计算所有符合条件的术语条目对应的中文列（zh）总字数（LEN），并导出独立统计报告 Excel。"
+            "• 统计产出：计算所有符合条件的术语条目对应的【主Key列】总字数（LEN），并导出独立统计报告 Excel。"
         )
         ttk.Label(f_stat, text=rule_desc, foreground="#555555", justify="left").grid(row=2, column=0, columnspan=3, sticky="w", pady=(5, 0))
 
@@ -5273,14 +5282,23 @@ class Drama_Merge_Series_Term_App:
     def clear_all_langs(self):
         self.lang_listbox.selection_clear(0, tk.END)
 
+    def refresh_target_lang_listbox(self):
+        """当主Key切换或重新扫描时，刷新待统计语言列表（自动排除当前选中的主Key列）"""
+        pk = self.primary_key_var.get().strip()
+        target_langs = [l for l in self.all_detected_langs if l != pk]
+        self.lang_listbox.delete(0, tk.END)
+        for lang in target_langs:
+            self.lang_listbox.insert(tk.END, lang)
+        self.lang_listbox.select_set(0, tk.END)
+
     def auto_scan_languages(self):
-        """预先扫描当前选中的文件，提取除 zh 和基础列外的语言代码并加入列表框"""
+        """扫描当前选中的文件，提取所有语言列（含 zh），填充主Key下拉框和待统计语言列表"""
         files = self._split_files(self.current_term_file.get()) + self._split_files(self.pre_term_file.get())
         if not files:
             return
         
         detected_langs = set()
-        basic_set = set(BASIC_ATTRS_KEYS) | {MERGE_STATUS_COL, 'zh'}
+        basic_set = set(BASIC_ATTRS_KEYS) | {MERGE_STATUS_COL}
 
         for fp in files:
             try:
@@ -5295,31 +5313,37 @@ class Drama_Merge_Series_Term_App:
                 pass
 
         if detected_langs:
-            # 排序展示，en优先
-            sorted_langs = []
-            if 'en' in detected_langs:
-                sorted_langs.append('en')
-            sorted_langs.extend(sorted([l for l in detected_langs if l != 'en']))
+            # 排序：zh 第一，en 第二，其余按字母序
+            sorted_all = []
+            for p_lang in LANG_PRIORITY:
+                if p_lang in detected_langs:
+                    sorted_all.append(p_lang)
+            sorted_all.extend(sorted([l for l in detected_langs if l not in LANG_PRIORITY]))
 
-            self.lang_listbox.delete(0, tk.END)
-            for lang in sorted_langs:
-                self.lang_listbox.insert(tk.END, lang)
-            self.lang_listbox.select_set(0, tk.END)  # 默认全选
-            self.log(f"📋 已预扫描识别出 {len(sorted_langs)} 个待统计目标语项: {sorted_langs}")
+            self.all_detected_langs = sorted_all
+            self.cb_primary_key['values'] = sorted_all
 
-    def _load_and_consolidate(self, file_paths: List[str], label: str) -> Tuple[Dict[str, Dict], Set[str]]:
+            # 如果当前选中的主Key不在扫描结果里，优先回退到 zh 或第一个语言
+            cur_pk = self.primary_key_var.get().strip()
+            if cur_pk not in sorted_all:
+                self.primary_key_var.set('zh' if 'zh' in sorted_all else sorted_all[0])
+
+            self.refresh_target_lang_listbox()
+            self.log(f"📋 已扫描识别出 {len(sorted_all)} 个语言列: {sorted_all} | 当前主Key列: [{self.primary_key_var.get()}]")
+
+    def _load_and_consolidate(self, file_paths: List[str], label: str, key_col: str = 'zh') -> Tuple[Dict[str, Dict], Set[str]]:
         if len(file_paths) == 1:
-            self.log(f"📖 读取【{label}】术语文件: {os.path.basename(file_paths[0])}")
-            return load_glossary(file_paths[0])
+            self.log(f"📖 读取【{label}】术语文件 (主Key: {key_col}): {os.path.basename(file_paths[0])}")
+            return load_glossary(file_paths[0], key_col=key_col)
 
-        self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备执行季内预合并...")
-        base_terms, total_lang_set = load_glossary(file_paths[0])
+        self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备以 [{key_col}] 为主Key执行季内预合并...")
+        base_terms, total_lang_set = load_glossary(file_paths[0], key_col=key_col)
         self.log(f"  -> [{label}] 已载入基准文件: {os.path.basename(file_paths[0])} (术语数: {len(base_terms)})")
 
         for idx, fp in enumerate(file_paths[1:], start=2):
             if self.stop_flag: break
             self.log(f"  -> [{label}] 正在融合第 {idx} 个文件: {os.path.basename(fp)}...")
-            nxt_terms, nxt_langs = load_glossary(fp)
+            nxt_terms, nxt_langs = load_glossary(fp, key_col=key_col)
             total_lang_set = total_lang_set | nxt_langs
             base_terms = merge_glossaries(base_terms, nxt_terms, total_lang_set)
 
@@ -5330,11 +5354,11 @@ class Drama_Merge_Series_Term_App:
         pre_files = self._split_files(self.pre_term_file.get())
         curr_files = self._split_files(self.current_term_file.get())
         out_folder = self.output_folder.get().strip()
+        key_col = self.primary_key_var.get().strip() or 'zh'
 
         if not pre_files or not curr_files or not out_folder:
             return messagebox.showwarning("警告", "请确保已有效选择【上一季术语文件】、【当前季术语文件】以及【输出文件夹】！")
 
-        # 获取手动选择的待统计语言
         sel_indices = self.lang_listbox.curselection()
         selected_langs = [self.lang_listbox.get(i) for i in sel_indices]
 
@@ -5345,25 +5369,28 @@ class Drama_Merge_Series_Term_App:
         self.log_area.delete(1.0, tk.END)
         self.log_area.config(state='disabled')
 
-        threading.Thread(target=self.worker, args=(pre_files, curr_files, out_folder, selected_langs), daemon=True).start()
+        threading.Thread(target=self.worker, args=(pre_files, curr_files, out_folder, selected_langs, key_col), daemon=True).start()
 
-    def worker(self, pre_files: List[str], curr_files: List[str], out_folder: str, target_stat_langs: List[str]):
+    def worker(self, pre_files: List[str], curr_files: List[str], out_folder: str, target_stat_langs: List[str], key_col: str):
         try:
-            self.parent.after(0, lambda: self.var_stats.set("正在载入并处理上一季术语..."))
-            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季")
+            self.parent.after(0, lambda: self.var_stats.set(f"正在载入并处理上一季术语 (主Key: {key_col})..."))
+            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季", key_col=key_col)
 
             if self.stop_flag: return
 
-            self.parent.after(0, lambda: self.var_stats.set("正在载入并处理当前季术语..."))
-            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季")
+            self.parent.after(0, lambda: self.var_stats.set(f"正在载入并处理当前季术语 (主Key: {key_col})..."))
+            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季", key_col=key_col)
 
             if self.stop_flag: return
 
             global_lang_set = prev_lang_set | curr_lang_set
-            self.log(f"🔍 全量语言集合计包含 {len(global_lang_set)} 种语言: {sorted(list(global_lang_set))}")
+            if key_col not in global_lang_set:
+                raise ValueError(f"所选的主Key列 [{key_col}] 在术语表文件中不存在，请检查或重新扫描选择！")
+
+            self.log(f"🔍 全量语言集合计包含 {len(global_lang_set)} 种语言: {sorted(list(global_lang_set))} | 主Key列: [{key_col}]")
 
             self.parent.after(0, lambda: self.var_stats.set("正在执行最终跨季深度合并..."))
-            self.log("⚙️ 正在执行跨季术语深度合并 (上一季 vs 当前季)...")
+            self.log(f"⚙️ 正在以 [{key_col}] 为唯一主Key执行跨季术语深度合并 (上一季 vs 当前季)...")
             merged_terms = merge_glossaries(prev_terms, curr_terms, global_lang_set)
 
             first_curr_name = os.path.splitext(os.path.basename(curr_files[0]))[0]
@@ -5377,24 +5404,24 @@ class Drama_Merge_Series_Term_App:
             self.log(f"💾 正在导出合并结果至: {output_file}")
             export_merged_glossary(merged_terms, output_file, global_lang_set)
 
-            # ================= 核心统计逻辑：计算各语项的新增/变动中文源字数 =================
-            self.parent.after(0, lambda: self.var_stats.set("正在统计各语项新增/变动中文字数..."))
-            self.log("\n📈 正在执行新增/变动词条及中文源字数（LEN）统计...")
+            # ================= 核心统计逻辑：计算各语项的新增/变动对应主Key源字数 =================
+            self.parent.after(0, lambda: self.var_stats.set(f"正在统计各语项新增/变动源字数 ({key_col})..."))
+            self.log(f"\n📈 正在执行新增/变动词条及主Key列（{key_col}）源字数（LEN）统计...")
 
-            # 确定要统计的语言列表（排除 zh 自身）
+            # 确定要统计的语言列表（排除主Key列自身）
             if target_stat_langs:
-                eval_langs = [l for l in target_stat_langs if l in global_lang_set and l != 'zh']
+                eval_langs = [l for l in target_stat_langs if l in global_lang_set and l != key_col]
             else:
-                eval_langs = [l for l in sorted(list(global_lang_set)) if l != 'zh']
+                eval_langs = [l for l in sorted(list(global_lang_set)) if l != key_col]
 
             stat_results = []
-            detail_records = []  # 记录具体的变动明细行，便于在统计报告第二个 sheet 核账
+            detail_records = []
 
             for lang in eval_langs:
-                total_zh_char_count = 0
+                total_key_char_count = 0
                 matched_entries_count = 0
 
-                for zh_val, obj in merged_terms.items():
+                for key_val, obj in merged_terms.items():
                     status = obj['merge_attrs'].get('status', '')
                     lang_info = obj['language_attrs'].get(lang, {'text': ''})
                     curr_text = str(lang_info.get('text', '')).strip()
@@ -5402,7 +5429,7 @@ class Drama_Merge_Series_Term_App:
                     is_qualify = False
                     reason = ""
 
-                    # 条件 1: merge_status == 'merged' 且该语言发生变动（包含在修改列表里，即标黄）
+                    # 条件 1: merge_status == 'merged' 且该语言发生变动（标黄）
                     if status == 'merged':
                         mod_fields = obj['merge_attrs'].get('modified_fields', [])
                         if lang in mod_fields:
@@ -5416,14 +5443,14 @@ class Drama_Merge_Series_Term_App:
                             reason = "全新词条"
 
                     if is_qualify:
-                        zh_len = len(zh_val)
-                        total_zh_char_count += zh_len
+                        key_len = len(key_val)
+                        total_key_char_count += key_len
                         matched_entries_count += 1
                         detail_records.append({
                             "语言代码": lang,
                             "触发类型": reason,
-                            "中文术语 (zh)": zh_val,
-                            "中文字数 (LEN)": zh_len,
+                            f"主Key术语 ({key_col})": key_val,
+                            f"源字数 (LEN-{key_col})": key_len,
                             "对应语项文本": curr_text,
                             "词条状态": status
                         })
@@ -5431,16 +5458,14 @@ class Drama_Merge_Series_Term_App:
                 stat_results.append({
                     "语言代码": lang,
                     "新增/变动词条数": matched_entries_count,
-                    "对应中文总字数 (LEN)": total_zh_char_count
+                    f"对应主Key总字数 (LEN-{key_col})": total_key_char_count
                 })
 
             # 导出独立统计报告
             with pd.ExcelWriter(report_file, engine='openpyxl') as writer:
-                # Sheet 1: 汇总统计
                 df_summary = pd.DataFrame(stat_results)
                 df_summary.to_excel(writer, index=False, sheet_name='各语项字数统计汇总')
                 
-                # Sheet 2: 核算明细
                 if detail_records:
                     df_detail = pd.DataFrame(detail_records)
                     df_detail.to_excel(writer, index=False, sheet_name='变动明细清单')
@@ -5449,29 +5474,28 @@ class Drama_Merge_Series_Term_App:
 
             self.log(f"📊 统计报告已导出至: {report_file}")
             self.log("---------------------------------------------------------")
-            self.log(f"{'语言代码':<12} | {'变动词条数':<12} | {'中文源字数 (LEN)':<15}")
+            self.log(f"{'语言代码':<12} | {'变动词条数':<12} | {f'源字数 (LEN-{key_col})':<15}")
             self.log("---------------------------------------------------------")
             for r in stat_results:
-                self.log(f"{r['语言代码']:<12} | {r['新增/变动词条数']:<14} | {r['对应中文总字数 (LEN)']:<15}")
+                self.log(f"{r['语言代码']:<12} | {r['新增/变动词条数']:<14} | {r[f'对应主Key总字数 (LEN-{key_col})']:<15}")
             self.log("---------------------------------------------------------")
 
-            # 终端常规统计总结
             total = len(merged_terms)
             keep_cnt = sum(1 for obj in merged_terms.values() if obj['merge_attrs'].get('status') == 'keep')
             merged_cnt = sum(1 for obj in merged_terms.values() if obj['merge_attrs'].get('status') == 'merged')
             new_cnt = sum(1 for obj in merged_terms.values() if obj['merge_attrs'].get('status') == 'new')
 
-            summary_popup = "\n".join([f"• {r['语言代码']}: 变动 {r['新增/变动词条数']} 条 | 中文 {r['对应中文总字数 (LEN)']} 字" for r in stat_results])
+            summary_popup = "\n".join([f"• {r['语言代码']}: 变动 {r['新增/变动词条数']} 条 | 源({key_col}) {r[f'对应主Key总字数 (LEN-{key_col})']} 字" for r in stat_results])
 
             self.parent.after(0, lambda: messagebox.showinfo(
                 "合并与统计完成", 
-                f"🎉 处理完成！\n\n"
+                f"🎉 处理完成！(主Key列: {key_col})\n\n"
                 f"【合并统计】\n"
                 f"• 总术语数: {total}\n"
                 f"• 沿用上一季 (keep): {keep_cnt}\n"
                 f"• 补齐更新 (merged - 已标黄): {merged_cnt}\n"
                 f"• 当前季新增 (new): {new_cnt}\n\n"
-                f"【各语项中文字数统计 (LEN)】\n{summary_popup}\n\n"
+                f"【各语项源字数统计 (LEN-{key_col})】\n{summary_popup}\n\n"
                 f"📁 合并文件已生成至:\n{output_file}\n"
                 f"📊 字数统计报告已生成至:\n{report_file}"
             ))
@@ -5485,9 +5509,6 @@ class Drama_Merge_Series_Term_App:
             self.parent.after(0, lambda: self.btn_start.config(state="normal"))
             self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
             self.parent.after(0, lambda: self.var_stats.set("任务已结束" if not self.stop_flag else "已被用户终止"))
-# ==============================================================================
-# ==================== 移植：合并对白与画面字 (CC & OST Merge) ====================
-# ==============================================================================
 
 def merge_subtitles_for_cc_and_ost_core(cc_list, ost_list, mode='ass'):
     """无损移植自原反编译代码：按时间轴切分并合并画面字与对白（画面字在上，对白在下）"""
