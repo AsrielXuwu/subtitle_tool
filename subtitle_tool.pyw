@@ -5014,7 +5014,7 @@ def _build_language_attrs(row: pd.Series, basic_cols: Set[str], from_flag: str) 
         lang_set.add(lang_code)
     return (lang_attrs, lang_set)
 
-def load_glossary(file_path: str, key_col: str = 'zh') -> Tuple[Dict[str, Dict], Set[str]]:
+def load_glossary(file_path: str, key_col: str = 'zh', dedup_merge: bool = False) -> Tuple[Dict[str, Dict], Set[str]]:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f'文件不存在: {file_path}')
     
@@ -5034,12 +5034,20 @@ def load_glossary(file_path: str, key_col: str = 'zh') -> Tuple[Dict[str, Dict],
         basic = {key: _safe_str(row.get(key, '')) for key in BASIC_ATTRS_KEYS}
         lang_attrs, lang_set = _build_language_attrs(row, basic_cols_set, 'previous')
         global_lang_set.update(lang_set)
-        term_obj = {
-            'basic_attrs': basic,
-            'language_attrs': lang_attrs,
-            'merge_attrs': {'status': 'keep', 'modified_fields': []}
-        }
-        terms[key_val] = term_obj
+        
+        if dedup_merge and key_val in terms:
+            # 开启同表重复Key预合并：复用原版属性合并函数，将当前行的非空字段补齐到已有条目中
+            existing_obj = terms[key_val]
+            _merge_basic_attrs(existing_obj['basic_attrs'], basic)
+            _merge_language_attrs(existing_obj['language_attrs'], lang_attrs)
+        else:
+            # 原版默认逻辑
+            term_obj = {
+                'basic_attrs': basic,
+                'language_attrs': lang_attrs,
+                'merge_attrs': {'status': 'keep', 'modified_fields': []}
+            }
+            terms[key_val] = term_obj
     return (terms, global_lang_set)
 
 def _merge_basic_attrs(base_basic: Dict[str, str], new_basic: Dict[str, str]) -> Tuple[bool, List[str]]:
@@ -5169,6 +5177,7 @@ class Drama_Merge_Series_Term_App:
         self.current_term_file = tk.StringVar()
         self.output_folder = tk.StringVar()
         self.primary_key_var = tk.StringVar(value="zh")  # 新增：主Key列选择变量，默认 zh
+        self.dedup_in_season_var = tk.BooleanVar(value=True)  # 新增：是否先合并季内重复Key条目（默认开启）
         self.stop_flag = False
         self.all_detected_langs = []  # 缓存扫描到的所有语言列
 
@@ -5219,7 +5228,13 @@ class Drama_Merge_Series_Term_App:
 
         ttk.Button(f_stat_ctrl, text="全选统计语项", command=self.select_all_langs).pack(side="left", padx=3)
         ttk.Button(f_stat_ctrl, text="清空选择", command=self.clear_all_langs).pack(side="left", padx=3)
-        ttk.Label(f_stat_ctrl, text="(默认以 zh 为主Key并全选其余目标语言)", foreground="gray").pack(side="left", padx=8)
+        
+        # 新增：季内重复Key互补合并可选项
+        ttk.Checkbutton(
+            f_stat_ctrl, 
+            text="先合并季内重复Key条目(互补空白译文)", 
+            variable=self.dedup_in_season_var
+        ).pack(side="left", padx=(12, 5))
 
         f_lb = ttk.Frame(f_stat)
         f_lb.grid(row=1, column=0, columnspan=3, sticky="ew", pady=2)
@@ -5331,24 +5346,33 @@ class Drama_Merge_Series_Term_App:
             self.refresh_target_lang_listbox()
             self.log(f"📋 已扫描识别出 {len(sorted_all)} 个语言列: {sorted_all} | 当前主Key列: [{self.primary_key_var.get()}]")
 
-    def _load_and_consolidate(self, file_paths: List[str], label: str, key_col: str = 'zh') -> Tuple[Dict[str, Dict], Set[str]]:
+    def _load_and_consolidate(self, file_paths: List[str], label: str, key_col: str = 'zh', dedup_merge: bool = False) -> Tuple[Dict[str, Dict], Set[str]]:
         if len(file_paths) == 1:
-            self.log(f"📖 读取【{label}】术语文件 (主Key: {key_col}): {os.path.basename(file_paths[0])}")
-            return load_glossary(file_paths[0], key_col=key_col)
+            mode_str = "开启同表重复Key互补合并" if dedup_merge else "原版标准读取"
+            self.log(f"📖 读取【{label}】术语文件 (主Key: {key_col} | {mode_str}): {os.path.basename(file_paths[0])}")
+            terms, lang_set = load_glossary(file_paths[0], key_col=key_col, dedup_merge=dedup_merge)
+        else:
+            self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备以 [{key_col}] 为主Key执行季内预合并...")
+            terms, lang_set = load_glossary(file_paths[0], key_col=key_col, dedup_merge=dedup_merge)
+            self.log(f"  -> [{label}] 已载入基准文件: {os.path.basename(file_paths[0])} (术语数: {len(terms)})")
 
-        self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备以 [{key_col}] 为主Key执行季内预合并...")
-        base_terms, total_lang_set = load_glossary(file_paths[0], key_col=key_col)
-        self.log(f"  -> [{label}] 已载入基准文件: {os.path.basename(file_paths[0])} (术语数: {len(base_terms)})")
+            for idx, fp in enumerate(file_paths[1:], start=2):
+                if self.stop_flag: break
+                self.log(f"  -> [{label}] 正在融合第 {idx} 个文件: {os.path.basename(fp)}...")
+                nxt_terms, nxt_langs = load_glossary(fp, key_col=key_col, dedup_merge=dedup_merge)
+                lang_set = lang_set | nxt_langs
+                terms = merge_glossaries(terms, nxt_terms, lang_set)
 
-        for idx, fp in enumerate(file_paths[1:], start=2):
-            if self.stop_flag: break
-            self.log(f"  -> [{label}] 正在融合第 {idx} 个文件: {os.path.basename(fp)}...")
-            nxt_terms, nxt_langs = load_glossary(fp, key_col=key_col)
-            total_lang_set = total_lang_set | nxt_langs
-            base_terms = merge_glossaries(base_terms, nxt_terms, total_lang_set)
+            self.log(f"✅ 【{label}】所有文件季内预合并完成，合并后有效术语数: {len(terms)}")
 
-        self.log(f"✅ 【{label}】所有文件季内预合并完成，合并后有效术语数: {len(base_terms)}")
-        return base_terms, total_lang_set
+        # 关键兼容保护：季内（无论是单文件去重还是多文件聚合）完成后，将状态重置为基准态，
+        # 确保后续跨季对比（上一季 vs 当前季）时，merged 标黄和 new 状态 100% 仅针对跨季差异！
+        for obj in terms.values():
+            obj['merge_attrs'] = {'status': 'keep', 'modified_fields': []}
+            for l_info in obj['language_attrs'].values():
+                l_info['from'] = 'previous'
+
+        return terms, lang_set
 
     def start(self):
         pre_files = self._split_files(self.pre_term_file.get())
@@ -5373,13 +5397,14 @@ class Drama_Merge_Series_Term_App:
 
     def worker(self, pre_files: List[str], curr_files: List[str], out_folder: str, target_stat_langs: List[str], key_col: str):
         try:
+            dedup_flag = self.dedup_in_season_var.get()
             self.parent.after(0, lambda: self.var_stats.set(f"正在载入并处理上一季术语 (主Key: {key_col})..."))
-            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季", key_col=key_col)
+            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季", key_col=key_col, dedup_merge=dedup_flag)
 
             if self.stop_flag: return
 
             self.parent.after(0, lambda: self.var_stats.set(f"正在载入并处理当前季术语 (主Key: {key_col})..."))
-            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季", key_col=key_col)
+            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季", key_col=key_col, dedup_merge=dedup_flag)
 
             if self.stop_flag: return
 
