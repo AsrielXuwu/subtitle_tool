@@ -2754,12 +2754,23 @@ def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件")
     ttk.Radiobutton(f_logic, text="【或】模式 (选中条件只需满足任意一项即执行)", variable=logic_var, value=1).pack(side=tk.LEFT)
 
     c1_var = tk.IntVar(value=0)
+    c1_col_var = tk.StringVar(value="Text")
     bracket_var = tk.StringVar(value="^\\[")
+    # 动态把列选择变量挂载到 bracket_var 上，保持外部解包完全兼容
+    bracket_var.col_var = c1_col_var
+
     f_c1 = ttk.Frame(f_cond)
     f_c1.pack(fill=tk.X, pady=2)
-    ttk.Checkbutton(f_c1, text="条件1: 匹配正则表达式:", variable=c1_var).pack(side=tk.LEFT)
+    ttk.Checkbutton(f_c1, text="条件1: 目标列", variable=c1_var).pack(side=tk.LEFT)
+    
+    # 新增：下拉选择列
+    col_choices = ["Text", "Style", "Effect", "Name", "Timeline", "ID", "Layer", "Start", "End", "MarginL", "MarginR", "MarginV"]
+    cb_c1_col = ttk.Combobox(f_c1, textvariable=c1_col_var, values=col_choices, width=8, state="readonly")
+    cb_c1_col.pack(side=tk.LEFT, padx=(2, 4))
+    
+    ttk.Label(f_c1, text="匹配正则:").pack(side=tk.LEFT)
     ttk.Entry(f_c1, textvariable=bracket_var, width=15).pack(side=tk.LEFT, padx=5)
-    ttk.Label(f_c1, text="(例如 ^\\[ 即查找文本首部存在 [ 的行)", foreground="gray").pack(side=tk.LEFT)
+    ttk.Label(f_c1, text="(例如 ^\\[ 即查找首部存在 [ 的行)", foreground="gray").pack(side=tk.LEFT)
     
     def scan_features():
         d = in_dir_var.get().strip()
@@ -2820,29 +2831,59 @@ def build_advanced_condition_ui(parent_widget, in_dir_var, title="判定条件")
 
     return f_cond, logic_var, c1_var, bracket_var, c2_var, lb_effs, c3_var, lb_styles
 
-def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles):
+def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles, c1_col="Text"):
     if not use_c1 and not use_c2 and not use_c3: return True
         
+    c1_col_lower = str(c1_col).strip().lower()
+    
     if fmt == "ASS":
-        txt = p[9]
-        effect = p[8].strip()
-        style = p[3].strip()
+        effect = p[8].strip() if len(p) >= 9 else ""
+        style = p[3].strip() if len(p) >= 4 else ""
+        
+        # 智能根据选中的列提取对应的值
+        if c1_col_lower == "style":
+            target_str = style
+        elif c1_col_lower == "effect":
+            target_str = effect
+        elif c1_col_lower in ["name", "actor"]:
+            target_str = p[4].strip() if len(p) >= 5 else ""
+        elif c1_col_lower == "layer":
+            target_str = p[0].split(':', 1)[1].strip() if ':' in p[0] else p[0].strip()
+        elif c1_col_lower == "start":
+            target_str = p[1].strip() if len(p) >= 2 else ""
+        elif c1_col_lower == "end":
+            target_str = p[2].strip() if len(p) >= 3 else ""
+        elif c1_col_lower == "timeline":
+            target_str = f"{p[1].strip()} --> {p[2].strip()}" if len(p) >= 3 else ""
+        elif c1_col_lower == "marginl":
+            target_str = p[5].strip() if len(p) >= 6 else ""
+        elif c1_col_lower == "marginr":
+            target_str = p[6].strip() if len(p) >= 7 else ""
+        elif c1_col_lower == "marginv":
+            target_str = p[7].strip() if len(p) >= 8 else ""
+        else: # 默认对 Text 判定 (剔除特效代码)
+            raw_txt = p[9] if len(p) >= 10 else ""
+            target_str = re.sub(r'\{.*?\}', '', raw_txt).strip()
     else: # SRT
-        txt = p[2]
         effect = ""
         style = ""
         use_c2 = False
         use_c3 = False
         
-    c_txt = re.sub(r'\{.*?\}', '', txt).strip()
+        if c1_col_lower == "id":
+            target_str = p[0].strip() if len(p) >= 1 else ""
+        elif c1_col_lower in ["timeline", "time"]:
+            target_str = p[1].strip() if len(p) >= 2 else ""
+        else: # 默认对 Text 判定 (剔除标签)
+            raw_txt = p[2] if len(p) >= 3 else ""
+            target_str = re.sub(r'<.*?>', '', raw_txt).strip()
     
     match_c1 = False
     if use_c1 and regex_pat:
         try:
-            # 只要有任何匹配内容即视为 True，支持多行
-            match_c1 = bool(re.search(regex_pat, c_txt))
+            match_c1 = bool(re.search(regex_pat, target_str))
         except:
-            pass # 若用户正则语法填错，则静默视为不匹配
+            pass # 正则语法错误时静默不匹配
             
     match_c2 = use_c2 and effect in sel_effs
     match_c3 = use_c3 and style in sel_styles
@@ -2857,7 +2898,6 @@ def evaluate_advanced_condition(fmt, p, logic_mode, use_c1, regex_pat, use_c2, s
         if use_c2 and match_c2: return True
         if use_c3 and match_c3: return True
         return False
-# ==========================================================
 
 # ================= 预设配置文件 (跨平台兼容版) =================
 # 解决 PyInstaller 在 macOS 打包后无权限在当前目录读写 json 文件的问题
@@ -4328,7 +4368,7 @@ def process_ass_inline_split(in_dir, out_dir, regex_pat):
         
     return processed_count
 
-def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, to_srt=False):
+def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, to_srt=False, c1_col="Text"):
     """根据组合条件将 ASS 拆分为画面字和普通字两个文件"""
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
     if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
@@ -4385,8 +4425,8 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
                     effect = parts[8].strip()
                     txt = parts[9]
                     
-                    # 接入全局高级判定求值器
-                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles)
+                    # 接入全局高级判定求值器 (支持动态指定目标列)
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles, c1_col=c1_col)
                     
                     if is_screen: 
                         screen_ev.append(ev)
@@ -4421,7 +4461,7 @@ def process_ass_split(in_dir, out_scr_dir, out_norm_dir, logic_mode, use_c1, bra
         processed_count += 1
     return processed_count
 # ================= UI 交互回调 =================
-def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, do_final_regex, regex_rules):
+def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2, sel_effs, use_c3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, do_final_regex, regex_rules, c1_col="Text"):
     files = [f for f in os.listdir(in_dir) if f.lower().endswith('.ass')]
     if not files: raise ValueError("输入文件夹中没有找到 .ass 文件！")
     os.makedirs(out_dir, exist_ok=True)
@@ -4454,12 +4494,12 @@ def process_timeline_op(in_dir, out_dir, logic_mode, use_c1, bracket_str, use_c2
             
         st_events, dt_events, parsed_order = [], [], []
 
-        # 接入全局高级判定求值器
+        # 接入全局高级判定求值器 (支持动态指定目标列)
         for file_idx, ev in enumerate(ev_lines):
             if ev.startswith('Dialogue:'):
                 parts = ev.split(',', 9)
                 if len(parts) >= 10:
-                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles)
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, regex_pat, use_c2, sel_effs, use_c3, sel_styles, c1_col=c1_col)
                     
                     st_ms = ass_time_to_ms(parts[1])
                     ed_ms = ass_time_to_ms(parts[2])
@@ -4872,7 +4912,8 @@ def run_ass_split():
     if u3 and not sel_styles: return messagebox.showwarning("警告", "勾选了样式条件，但未在列表中选中任何样式！")
     
     try:
-        count = process_ass_split(i_d, o_s, o_n, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, to_srt)
+        c1_col = getattr(split_ass_bracket_var, 'col_var', tk.StringVar(value="Text")).get()
+        count = process_ass_split(i_d, o_s, o_n, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, to_srt, c1_col=c1_col)
         messagebox.showinfo("完成", f"拆分成功！\n共处理了 {count} 个 ASS 文件，已分别输出。")
     except Exception as e: messagebox.showerror("错误", f"拆分失败:\n{str(e)}")
 
@@ -5014,7 +5055,7 @@ def _build_language_attrs(row: pd.Series, basic_cols: Set[str], from_flag: str) 
         lang_set.add(lang_code)
     return (lang_attrs, lang_set)
 
-def load_glossary(file_path: str, key_col: str = 'zh', dedup_merge: bool = False) -> Tuple[Dict[str, Dict], Set[str]]:
+def load_glossary(file_path: str, key_col: str = 'zh', dedup_merge: bool = False, dedup_keep_last: bool = True) -> Tuple[Dict[str, Dict], Set[str]]:
     if not os.path.exists(file_path):
         raise FileNotFoundError(f'文件不存在: {file_path}')
     
@@ -5036,10 +5077,17 @@ def load_glossary(file_path: str, key_col: str = 'zh', dedup_merge: bool = False
         global_lang_set.update(lang_set)
         
         if dedup_merge and key_val in terms:
-            # 开启同表重复Key预合并：复用原版属性合并函数，将当前行的非空字段补齐到已有条目中
             existing_obj = terms[key_val]
-            _merge_basic_attrs(existing_obj['basic_attrs'], basic)
-            _merge_language_attrs(existing_obj['language_attrs'], lang_attrs)
+            if dedup_keep_last:
+                # 取最后一个出现的版本：以当前新行为主，用已有旧行去补齐当前新行的空白字段
+                _merge_basic_attrs(basic, existing_obj['basic_attrs'])
+                _merge_language_attrs(lang_attrs, existing_obj['language_attrs'])
+                existing_obj['basic_attrs'] = basic
+                existing_obj['language_attrs'] = lang_attrs
+            else:
+                # 取第一个出现的版本：以已有旧行为主，用当前新行去补齐旧行的空白字段
+                _merge_basic_attrs(existing_obj['basic_attrs'], basic)
+                _merge_language_attrs(existing_obj['language_attrs'], lang_attrs)
         else:
             # 原版默认逻辑
             term_obj = {
@@ -5050,17 +5098,26 @@ def load_glossary(file_path: str, key_col: str = 'zh', dedup_merge: bool = False
             terms[key_val] = term_obj
     return (terms, global_lang_set)
 
-def _merge_basic_attrs(base_basic: Dict[str, str], new_basic: Dict[str, str]) -> Tuple[bool, List[str]]:
+def _merge_basic_attrs(base_basic: Dict[str, str], new_basic: Dict[str, str], overwrite_mode: bool = False) -> Tuple[bool, List[str]]:
     updated = False
     modified = []
     for key in BASIC_ATTRS_KEYS:
-        if base_basic.get(key, '') == '' and new_basic.get(key, '') != '':
-            base_basic[key] = new_basic[key]
-            updated = True
-            modified.append(key)
+        new_val = new_basic.get(key, '')
+        base_val = base_basic.get(key, '')
+        if new_val != '':
+            # 基础规则：原为空则补充
+            if base_val == '':
+                base_basic[key] = new_val
+                updated = True
+                modified.append(key)
+            # 覆盖模式：若新值与原值不同，则直接用当前季覆盖上一季
+            elif overwrite_mode and base_val != new_val:
+                base_basic[key] = new_val
+                updated = True
+                modified.append(key)
     return (updated, modified)
 
-def _merge_language_attrs(base_lang: Dict[str, Dict[str, str]], new_lang: Dict[str, Dict[str, str]]) -> Tuple[bool, List[str]]:
+def _merge_language_attrs(base_lang: Dict[str, Dict[str, str]], new_lang: Dict[str, Dict[str, str]], overwrite_mode: bool = False) -> Tuple[bool, List[str]]:
     updated = False
     modified_columns = []
     for lang_code, lang_info in new_lang.items():
@@ -5070,19 +5127,33 @@ def _merge_language_attrs(base_lang: Dict[str, Dict[str, str]], new_lang: Dict[s
             modified_columns.append(lang_code)
             modified_columns.append(f'{lang_code}{LANG_SUFFIX}')
         else:
-            if base_lang[lang_code]['text'] == '' and lang_info['text'] != '':
-                old_case = base_lang[lang_code]['case_sensitive']
-                new_case = lang_info['case_sensitive']
-                base_lang[lang_code]['text'] = lang_info['text']
+            new_text = lang_info['text']
+            new_case = lang_info['case_sensitive']
+            old_text = base_lang[lang_code]['text']
+            old_case = base_lang[lang_code]['case_sensitive']
+            
+            # 规则1：原为空且新非空，直接补充（原版规则）
+            if old_text == '' and new_text != '':
+                base_lang[lang_code]['text'] = new_text
                 base_lang[lang_code]['case_sensitive'] = new_case
                 base_lang[lang_code]['from'] = 'current'
                 updated = True
                 modified_columns.append(lang_code)
                 if old_case != new_case:
                     modified_columns.append(f'{lang_code}{LANG_SUFFIX}')
+            # 规则2：覆盖模式开启时，新值非空且发生更新，强制用当前季覆盖上一季并记录标黄
+            elif overwrite_mode and new_text != '' and (old_text != new_text or old_case != new_case):
+                base_lang[lang_code]['text'] = new_text
+                base_lang[lang_code]['case_sensitive'] = new_case
+                base_lang[lang_code]['from'] = 'current'
+                updated = True
+                if old_text != new_text:
+                    modified_columns.append(lang_code)
+                if old_case != new_case:
+                    modified_columns.append(f'{lang_code}{LANG_SUFFIX}')
     return (updated, modified_columns)
 
-def merge_glossaries(prev_terms: Dict[str, Dict], curr_terms: Dict[str, Dict], global_lang_set: Set[str]) -> Dict[str, Dict]:
+def merge_glossaries(prev_terms: Dict[str, Dict], curr_terms: Dict[str, Dict], global_lang_set: Set[str], overwrite_mode: bool = False) -> Dict[str, Dict]:
     merged = copy.deepcopy(prev_terms)
     for zh_val, curr_obj in curr_terms.items():
         if zh_val not in merged:
@@ -5094,11 +5165,11 @@ def merge_glossaries(prev_terms: Dict[str, Dict], curr_terms: Dict[str, Dict], g
             base_obj = merged[zh_val]
             updated = False
             all_modified_columns = []
-            basic_updated, basic_modified = _merge_basic_attrs(base_obj['basic_attrs'], curr_obj['basic_attrs'])
+            basic_updated, basic_modified = _merge_basic_attrs(base_obj['basic_attrs'], curr_obj['basic_attrs'], overwrite_mode=overwrite_mode)
             if basic_updated:
                 updated = True
                 all_modified_columns.extend(basic_modified)
-            lang_updated, lang_modified = _merge_language_attrs(base_obj['language_attrs'], curr_obj['language_attrs'])
+            lang_updated, lang_modified = _merge_language_attrs(base_obj['language_attrs'], curr_obj['language_attrs'], overwrite_mode=overwrite_mode)
             if lang_updated:
                 updated = True
                 all_modified_columns.extend(lang_modified)
@@ -5178,6 +5249,8 @@ class Drama_Merge_Series_Term_App:
         self.output_folder = tk.StringVar()
         self.primary_key_var = tk.StringVar(value="zh")  # 新增：主Key列选择变量，默认 zh
         self.dedup_in_season_var = tk.BooleanVar(value=True)  # 新增：是否先合并季内重复Key条目（默认开启）
+        self.dedup_strategy_var = tk.StringVar(value="取最后一个")  # 新增：季内重复冲突时保留策略，默认取最后一个
+        self.overwrite_mode_var = tk.BooleanVar(value=False)  # 新增：跨季覆盖模式（默认关闭，保持原版逻辑）
         self.stop_flag = False
         self.all_detected_langs = []  # 缓存扫描到的所有语言列
 
@@ -5229,12 +5302,34 @@ class Drama_Merge_Series_Term_App:
         ttk.Button(f_stat_ctrl, text="全选统计语项", command=self.select_all_langs).pack(side="left", padx=3)
         ttk.Button(f_stat_ctrl, text="清空选择", command=self.clear_all_langs).pack(side="left", padx=3)
         
-        # 新增：季内重复Key互补合并可选项
+        def toggle_dedup_combo():
+            state = "readonly" if self.dedup_in_season_var.get() else "disabled"
+            self.cb_dedup_strategy.config(state=state)
+
+        # 季内重复Key互补合并可选项 + 冲突保留策略
         ttk.Checkbutton(
             f_stat_ctrl, 
-            text="先合并季内重复Key条目(互补空白译文)", 
-            variable=self.dedup_in_season_var
-        ).pack(side="left", padx=(12, 5))
+            text="合并季内重复Key(互补空白)", 
+            variable=self.dedup_in_season_var,
+            command=toggle_dedup_combo
+        ).pack(side="left", padx=(10, 2))
+
+        ttk.Label(f_stat_ctrl, text="冲突时:").pack(side=tk.LEFT, padx=(2, 2))
+        self.cb_dedup_strategy = ttk.Combobox(
+            f_stat_ctrl, 
+            textvariable=self.dedup_strategy_var, 
+            values=["取最后一个", "取第一个"], 
+            width=10, 
+            state="readonly"
+        )
+        self.cb_dedup_strategy.pack(side=tk.LEFT, padx=(0, 10))
+
+        # 新增：单独的“覆盖模式”复选框控件
+        ttk.Checkbutton(
+            f_stat_ctrl,
+            text="覆盖模式(当前季有更新则覆盖上一季)",
+            variable=self.overwrite_mode_var
+        ).pack(side="left", padx=(5, 5))
 
         f_lb = ttk.Frame(f_stat)
         f_lb.grid(row=1, column=0, columnspan=3, sticky="ew", pady=2)
@@ -5346,22 +5441,32 @@ class Drama_Merge_Series_Term_App:
             self.refresh_target_lang_listbox()
             self.log(f"📋 已扫描识别出 {len(sorted_all)} 个语言列: {sorted_all} | 当前主Key列: [{self.primary_key_var.get()}]")
 
-    def _load_and_consolidate(self, file_paths: List[str], label: str, key_col: str = 'zh', dedup_merge: bool = False) -> Tuple[Dict[str, Dict], Set[str]]:
+    def _load_and_consolidate(self, file_paths: List[str], label: str, key_col: str = 'zh', dedup_merge: bool = False, dedup_keep_last: bool = True) -> Tuple[Dict[str, Dict], Set[str]]:
+        strat_str = "取最后一个" if dedup_keep_last else "取第一个"
         if len(file_paths) == 1:
-            mode_str = "开启同表重复Key互补合并" if dedup_merge else "原版标准读取"
+            mode_str = f"开启重复Key互补合并({strat_str})" if dedup_merge else "原版标准读取"
             self.log(f"📖 读取【{label}】术语文件 (主Key: {key_col} | {mode_str}): {os.path.basename(file_paths[0])}")
-            terms, lang_set = load_glossary(file_paths[0], key_col=key_col, dedup_merge=dedup_merge)
+            terms, lang_set = load_glossary(file_paths[0], key_col=key_col, dedup_merge=dedup_merge, dedup_keep_last=dedup_keep_last)
         else:
-            self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备以 [{key_col}] 为主Key执行季内预合并...")
-            terms, lang_set = load_glossary(file_paths[0], key_col=key_col, dedup_merge=dedup_merge)
+            self.log(f"📚 检测到【{label}】共有 {len(file_paths)} 个文件，准备以 [{key_col}] 为主Key执行季内预合并 (冲突策略: {strat_str})...")
+            terms, lang_set = load_glossary(file_paths[0], key_col=key_col, dedup_merge=dedup_merge, dedup_keep_last=dedup_keep_last)
             self.log(f"  -> [{label}] 已载入基准文件: {os.path.basename(file_paths[0])} (术语数: {len(terms)})")
 
             for idx, fp in enumerate(file_paths[1:], start=2):
                 if self.stop_flag: break
                 self.log(f"  -> [{label}] 正在融合第 {idx} 个文件: {os.path.basename(fp)}...")
-                nxt_terms, nxt_langs = load_glossary(fp, key_col=key_col, dedup_merge=dedup_merge)
+                nxt_terms, nxt_langs = load_glossary(fp, key_col=key_col, dedup_merge=dedup_merge, dedup_keep_last=dedup_keep_last)
                 lang_set = lang_set | nxt_langs
-                terms = merge_glossaries(terms, nxt_terms, lang_set)
+                if dedup_merge and dedup_keep_last:
+                    # 多文件间也遵循“取最后一个”：以新文件 nxt_terms 为基准，用旧文件 terms 补齐其空白，再把旧文件独有词条合入
+                    temp_merged = merge_glossaries(nxt_terms, terms, lang_set)
+                    for k, v in terms.items():
+                        if k not in temp_merged:
+                            temp_merged[k] = copy.deepcopy(v)
+                    terms = temp_merged
+                else:
+                    # 默认以先出现的文件为基准，后出现的文件仅补齐空白
+                    terms = merge_glossaries(terms, nxt_terms, lang_set)
 
             self.log(f"✅ 【{label}】所有文件季内预合并完成，合并后有效术语数: {len(terms)}")
 
@@ -5398,13 +5503,14 @@ class Drama_Merge_Series_Term_App:
     def worker(self, pre_files: List[str], curr_files: List[str], out_folder: str, target_stat_langs: List[str], key_col: str):
         try:
             dedup_flag = self.dedup_in_season_var.get()
+            keep_last_flag = (self.dedup_strategy_var.get() == "取最后一个")
             self.parent.after(0, lambda: self.var_stats.set(f"正在载入并处理上一季术语 (主Key: {key_col})..."))
-            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季", key_col=key_col, dedup_merge=dedup_flag)
+            prev_terms, prev_lang_set = self._load_and_consolidate(pre_files, "上一季", key_col=key_col, dedup_merge=dedup_flag, dedup_keep_last=keep_last_flag)
 
             if self.stop_flag: return
 
             self.parent.after(0, lambda: self.var_stats.set(f"正在载入并处理当前季术语 (主Key: {key_col})..."))
-            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季", key_col=key_col, dedup_merge=dedup_flag)
+            curr_terms, curr_lang_set = self._load_and_consolidate(curr_files, "当前季", key_col=key_col, dedup_merge=dedup_flag, dedup_keep_last=keep_last_flag)
 
             if self.stop_flag: return
 
@@ -5414,9 +5520,11 @@ class Drama_Merge_Series_Term_App:
 
             self.log(f"🔍 全量语言集合计包含 {len(global_lang_set)} 种语言: {sorted(list(global_lang_set))} | 主Key列: [{key_col}]")
 
+            overwrite_flag = self.overwrite_mode_var.get()
+            mode_desc = "覆盖模式: 当前季有更新则覆盖上一季" if overwrite_flag else "增补模式: 上一季优先保留，仅填补空白"
             self.parent.after(0, lambda: self.var_stats.set("正在执行最终跨季深度合并..."))
-            self.log(f"⚙️ 正在以 [{key_col}] 为唯一主Key执行跨季术语深度合并 (上一季 vs 当前季)...")
-            merged_terms = merge_glossaries(prev_terms, curr_terms, global_lang_set)
+            self.log(f"⚙️ 正在以 [{key_col}] 为唯一主Key执行跨季术语深度合并 ({mode_desc})...")
+            merged_terms = merge_glossaries(prev_terms, curr_terms, global_lang_set, overwrite_mode=overwrite_flag)
 
             first_curr_name = os.path.splitext(os.path.basename(curr_files[0]))[0]
             if len(curr_files) > 1:
@@ -6692,8 +6800,9 @@ def run_time_op():
             regex_rules.append((pat, repl_python))
     
     try:
-        # 新增：将 do_final_regex 传给底层引擎
-        count = process_timeline_op(in_d, out_d, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, do_final_regex, regex_rules)
+        # 新增：将 do_final_regex 和选中的列 c1_col 传给底层引擎
+        c1_col = getattr(time_bracket_var, 'col_var', tk.StringVar(value="Text")).get()
+        count = process_timeline_op(in_d, out_d, logic_mode, u1, b_str, u2, sel_effs, u3, sel_styles, opt1, opt2, tie_mode, threshold, do_concat, concat_pos, do_del, do_regex, do_final_regex, regex_rules, c1_col=c1_col)
         messagebox.showinfo("完成", f"时间轴操作成功！\n共完美处理了 {count} 个 ASS 文件。")
     except Exception as e:
         messagebox.showerror("错误", f"处理失败:\n{str(e)}")
@@ -7290,18 +7399,35 @@ ttk.Button(tab_am, text="浏览...", command=lambda: ask_dir(am_out_var, "选择
 
 ttk.Button(tab_am, text="开始合并 ASS", command=run_ass_merge, style='TButton').grid(row=4, column=0, columnspan=3, pady=20, ipadx=20, ipady=5)
 
-# ====== 核心修复：当输入文件夹发生改变时，自动清空旧的内存暂存 ======
-def clear_memory_on_dir_change(*args):
-    global_ass_memory_cache.clear()
-edit_in_var.trace_add("write", clear_memory_on_dir_change)
-# ==============================================================
+# ====== 核心逻辑：明确的内存暂存清空函数 ======
+def clear_editor_memory_cache():
+    if global_ass_memory_cache:
+        global_ass_memory_cache.clear()
+
+def on_edit_in_var_change(*args):
+    clear_editor_memory_cache()
+edit_in_var.trace_add("write", on_edit_in_var_change)
+
+def browse_edit_in_dir():
+    # 无论是选新文件夹还是选同一个文件夹，只要重新选择一律清空暂存
+    p = filedialog.askdirectory(title="选择目录")
+    if p:
+        clear_editor_memory_cache()
+        edit_in_var.set(p)
 
 ttk.Label(tab_edit, text="字幕输入文件夹:").grid(row=0, column=0, sticky="e", padx=(0,5), pady=5)
-DnDEntry(tab_edit, textvariable=edit_in_var).grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+ent_edit_in = DnDEntry(tab_edit, textvariable=edit_in_var)
+ent_edit_in.grid(row=0, column=1, sticky="ew", padx=5, pady=5)
+
+# 即使拖入相同目录，也强制拦截并清空暂存
+def on_drop_edit_in(event):
+    clear_editor_memory_cache()
+ent_edit_in.dnd_bind('<<Drop>>', on_drop_edit_in, add='+')
+
 # === 第 0 行：输入文件夹的浏览按钮 + 暂存按钮 ===
 f_edit_in_btns = ttk.Frame(tab_edit)
 f_edit_in_btns.grid(row=0, column=2, sticky="w", padx=(5,0), pady=5)
-ttk.Button(f_edit_in_btns, text="浏览...", command=lambda: ask_dir(edit_in_var, "选择目录")).pack(side=tk.LEFT)
+ttk.Button(f_edit_in_btns, text="浏览...", command=browse_edit_in_dir).pack(side=tk.LEFT)
 ttk.Button(f_edit_in_btns, text="💾 暂存到内存", command=lambda: execute_ass_editor(stage_only=True)).pack(side=tk.LEFT, padx=(10, 0))
 
 ttk.Label(tab_edit, text="修改后字幕输出:").grid(row=1, column=0, sticky="e", padx=(0,5), pady=5)
@@ -7377,13 +7503,12 @@ def scan_m0_cols():
     vals = set()
     for filepath in ass_files:
         file_name = os.path.basename(filepath)
-        # --- 核心：优先从内存暂存中读取 ---
+        # --- 核心：优先从内存暂存中读取，未暂存时仅读文件，严禁存入内存 ---
         if file_name in global_ass_memory_cache:
             lines = global_ass_memory_cache[file_name].split('\n')
         else:
             try:
                 with open(filepath, 'r', encoding='utf-8-sig') as f: lines = f.read().split('\n')
-                global_ass_memory_cache[file_name] = "\n".join(lines)
             except: continue
             
         for line in lines:
@@ -7667,13 +7792,12 @@ def load_m7_content():
     if not f: return
     p = os.path.join(edit_in_var.get().strip(), f)
     
-    # --- 核心：优先从内存暂存中读取以保证多步操作连贯 ---
+    # --- 核心：优先从内存暂存中读取，未暂存时仅读文件，严禁存入内存 ---
     if f in global_ass_memory_cache:
         lines = global_ass_memory_cache[f].split('\n')
     else:
         if not os.path.exists(p): return
         with open(p, 'r', encoding='utf-8-sig') as f_in: lines = f_in.read().split('\n')
-        global_ass_memory_cache[f] = "\n".join(lines)
     
     m7_tree.delete(*m7_tree.get_children())
     curr, ev_lines_temp = "info", []
@@ -8336,12 +8460,11 @@ def execute_ass_editor(stage_only=False):
         # 【修复1】：删除了 mode 4 的强制跳过，让所有文件都能走完最后的保存流程
         in_path, out_path = os.path.join(i_dir, file), os.path.join(o_dir, file)
         
-        # ====== 内存优先加载 ======
+        # ====== 核心：有手动暂存才读内存，没有手动暂存则重新读取磁盘文件，严禁自动塞进内存 ======
         if file in global_ass_memory_cache:
             content = global_ass_memory_cache[file]
         else:
             with open(in_path, 'r', encoding='utf-8-sig') as f: content = f.read()
-            global_ass_memory_cache[file] = content
 
         # ====== SRT 格式文件独立处理逻辑 ======
         if fmt == "SRT" and mode == 3:
@@ -8362,8 +8485,9 @@ def execute_ass_editor(stage_only=False):
                 p = [block['ID'], block['Timeline'], block['Text']]
                 tgt_idx = int(f4_target_col.get().split(':')[0])
                 
-                # 直接传入正则规则 b
-                is_match = evaluate_advanced_condition("SRT", p, logic_mode, use_c1, b, False, sel_effs, False, sel_styles)
+                # 直接传入正则规则 b 与目标列
+                c1_col = getattr(f4_bracket_var, 'col_var', tk.StringVar(value="Text")).get()
+                is_match = evaluate_advanced_condition("SRT", p, logic_mode, use_c1, b, False, sel_effs, False, sel_styles, c1_col=c1_col)
                     
                 if is_match:
                     orig_tgt = p[tgt_idx]
@@ -8411,9 +8535,11 @@ def execute_ass_editor(stage_only=False):
             
             # 新增：如果是只查找模式，拦截保存操作（不污染内存，也不输出文件）
             if f4_find_only_var.get() == 0:
-                if stage_only: global_ass_memory_cache[file] = final_content
-                else: 
+                if stage_only:
+                    # 仅手动点击“暂存到内存”时更新内存
                     global_ass_memory_cache[file] = final_content
+                else: 
+                    # 批处理输出仅写入目标文件，绝不污染或覆盖内存暂存
                     with open(out_path, 'w', encoding='utf-8') as f: f.write(final_content)
             continue
         # ================= ASS 处理 =================
@@ -8537,8 +8663,9 @@ def execute_ass_editor(stage_only=False):
             for ev in ev_lines:
                 parts = ev.split(',', 9)
                 if len(parts) >= 10 and ev.strip().startswith('Dialogue:'):
-                    # 直接传入正则规则 b
-                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles)
+                    # 直接传入正则规则 b 与目标列
+                    c1_col = getattr(edit_m2_bracket, 'col_var', tk.StringVar(value="Text")).get()
+                    is_screen = evaluate_advanced_condition("ASS", parts, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles, c1_col=c1_col)
                     if is_screen: parts[3] = s_name
                     else: parts[3] = n_name
                     new_ev.append(",".join(parts))
@@ -8620,8 +8747,9 @@ def execute_ass_editor(stage_only=False):
                 if ev.startswith('Dialogue:'):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
-                        # 直接传入正则规则 b
-                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles)
+                        # 直接传入正则规则 b 与目标列
+                        c1_col = getattr(f4_bracket_var, 'col_var', tk.StringVar(value="Text")).get()
+                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles, c1_col=c1_col)
                         
                         if is_match:
                             orig_tgt = p[tgt_idx]
@@ -8744,8 +8872,9 @@ def execute_ass_editor(stage_only=False):
                 if ev.startswith('Dialogue:'):
                     p = ev.split(',', 9)
                     if len(p) >= 10:
-                        # 直接传入正则规则 b
-                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles)
+                        # 直接传入正则规则 b 与目标列
+                        c1_col = getattr(f8_bracket_var, 'col_var', tk.StringVar(value="Text")).get()
+                        is_match = evaluate_advanced_condition("ASS", p, logic_mode, use_c1, b, use_c2, sel_effs, use_c3, sel_styles, c1_col=c1_col)
                             
                         if is_match:
                             p[3] = new_style_name
@@ -8827,9 +8956,10 @@ def execute_ass_editor(stage_only=False):
             pass
         else:
             if stage_only:
+                # 仅手动点击“暂存到内存”时更新内存
                 global_ass_memory_cache[file] = final_content
             else:
-                global_ass_memory_cache[file] = final_content
+                # 批处理输出仅写入目标文件，绝不污染或覆盖内存暂存
                 with open(out_path, 'w', encoding='utf-8') as f:
                     f.write(final_content)
 
