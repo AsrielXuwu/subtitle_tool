@@ -6353,7 +6353,142 @@ class Xlsx_Compare_App:
             self.parent.after(0, lambda: self.btn_stop.config(state="disabled"))
             self.parent.after(0, lambda: self.var_stats.set("任务已结束" if not self.stop_flag else "已被用户终止"))
 
-root = TkinterDnD.Tk()  # 替换原来的 tk.Tk()，让主窗口赋予拖拽超能力
+# ================= 新增：机器码授权验证窗口 =================
+import hashlib
+import uuid
+import urllib.request
+import ssl
+
+class LicenseAuthWindow:
+    def __init__(self):
+        # GitHub 仓库白名单链接
+        self.raw_github_url = "https://raw.githubusercontent.com/AsrielXuwu/video_tool/refs/heads/main/whitelist.txt"
+        self.auth_passed = False
+        self.machine_code = self.get_machine_code()
+
+        self.win = tk.Tk()
+        self.win.title("设备授权验证")
+        self.win.geometry("450x260")
+        self.win.resizable(False, False)
+
+        # 窗口居中显示
+        self.win.update_idletasks()
+        w = self.win.winfo_width()
+        h = self.win.winfo_height()
+        x = (self.win.winfo_screenwidth() // 2) - (w // 2)
+        y = (self.win.winfo_screenheight() // 2) - (h // 2)
+        self.win.geometry(f"{w}x{h}+{x}+{y}")
+
+        self.setup_ui()
+
+    def get_machine_code(self):
+        """生成与硬件绑定的唯一机器码 (跨平台取 MAC 与系统信息计算 MD5)"""
+        node_id = str(uuid.getnode())
+        raw_info = f"{sys.platform}-{node_id}"
+        # 生成 16 位大写特征码，格式形如: ABCD-EF01-2345-6789
+        m = hashlib.md5(raw_info.encode('utf-8')).hexdigest().upper()
+        return f"{m[:4]}-{m[4:8]}-{m[8:12]}-{m[12:16]}"
+
+    def setup_ui(self):
+        frame = ttk.Frame(self.win, padding=20)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="欢迎使用字幕处理工具", font=("微软雅黑", 12, "bold")).pack(pady=(0, 5))
+        ttk.Label(frame, text="首次使用需检测设备授权，请将下方机器码提交给管理员加入白名单。", 
+                  wraplength=380, foreground="#555", justify="center").pack(pady=(0, 15))
+
+        f_code = ttk.Frame(frame)
+        f_code.pack(fill=tk.X, pady=5)
+        ttk.Label(f_code, text="本机机器码:").pack(side=tk.LEFT)
+
+        self.entry_code = ttk.Entry(f_code, font=("Consolas", 10, "bold"))
+        self.entry_code.insert(0, self.machine_code)
+        self.entry_code.config(state="readonly")  # 只读，严格禁止手动输入编辑
+        self.entry_code.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+
+        btn_copy = ttk.Button(f_code, text="复制", width=6, command=self.copy_code)
+        btn_copy.pack(side=tk.LEFT)
+
+        self.lbl_status = ttk.Label(frame, text="等待验证...", foreground="#777")
+        self.lbl_status.pack(pady=10)
+
+        self.btn_verify = ttk.Button(frame, text="验证本机机器码并进入系统", command=self.start_verify)
+        self.btn_verify.pack(fill=tk.X, ipady=3)
+
+    def copy_code(self):
+        self.win.clipboard_clear()
+        self.win.clipboard_append(self.machine_code)
+        messagebox.showinfo("提示", "机器码已成功复制到剪贴板！")
+
+    def start_verify(self):
+        self.btn_verify.config(state="disabled")
+        self.lbl_status.config(text="正在连接 GitHub 校验白名单，请稍候...", foreground="#0066cc")
+        threading.Thread(target=self._verify_thread, daemon=True).start()
+
+    def _verify_thread(self):
+        whitelist = []
+        is_network_success = False
+
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+
+        # 免校验 SSL 上下文，防止底层证书握手阻断
+        ssl_ctx = ssl._create_unverified_context()
+
+        # 优先直连，备用代理通道兜底
+        test_urls = [
+            self.raw_github_url,
+            f"https://ghfast.top/{self.raw_github_url}",
+            f"https://ghproxy.org/{self.raw_github_url}",
+            f"https://mirror.ghproxy.com/{self.raw_github_url}"
+        ]
+
+        for url in test_urls:
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=5, context=ssl_ctx) as response:
+                    if response.status == 200:
+                        content = response.read().decode('utf-8', errors='ignore')
+                        # 按行清洗：去除行首 markdown 标记（如 -、* 等）及多余空白，转大写
+                        whitelist = [re.sub(r'^[\*\-\#\>\s]+', '', line).strip().upper() for line in content.splitlines() if line.strip()]
+                        is_network_success = True
+                        break
+            except Exception as e:
+                print(f"尝试通道 {url} 失败: {e}")
+                continue
+
+        if not is_network_success:
+            self.win.after(0, self._on_verify_fail, "连接服务器失败！请检查网络连接后重试。")
+            return
+
+        # 对比白名单
+        if self.machine_code in whitelist:
+            self.win.after(0, self._on_verify_success)
+        else:
+            self.win.after(0, self._on_verify_fail, "授权未通过！本机机器码不在授权白名单中。\n请联系管理员授权。")
+
+    def _on_verify_success(self):
+        self.auth_passed = True
+        self.win.destroy()
+
+    def _on_verify_fail(self, error_msg):
+        self.btn_verify.config(state="normal")
+        self.lbl_status.config(text="验证未通过", foreground="red")
+        messagebox.showerror("未获得授权", error_msg)
+
+    def run(self):
+        self.win.mainloop()
+        return self.auth_passed
+
+
+# 步骤 1：先调出验证窗体，未通过或关闭窗口则直接终止退出
+_auth_checker = LicenseAuthWindow()
+if not _auth_checker.run():
+    sys.exit(0)
+
+# 步骤 2：仅当验证成功通过时，才唤醒 TkinterDnD 与主程序界面
+root = TkinterDnD.Tk()
 root.title("字幕拆分与合并工具箱")
 root.geometry("770x670")
 root.minsize(500, 500)
